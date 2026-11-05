@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="书同文·车同轨">
+  <rect width="64" height="64" rx="14" fill="#1f3b5c"/>
+  <rect x="13" y="15" width="34" height="6" rx="3" fill="#8fd3ff"/>
+  <rect x="13" y="27" width="26" height="6" rx="3" fill="#8fd3ff"/>
+  <rect x="13" y="39" width="18" height="6" rx="3" fill="#5fb3e8"/>
+  <path d="M38 40l10 7-10 7z" fill="#ffd166"/>
+  <circle cx="50" cy="20" r="4" fill="#7ee0c3"/>
+</svg>

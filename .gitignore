@@ -1,0 +1,8 @@
+node_modules/
+apply-error.log
+*.pending.json
+*.corrupt-*
+*.bak-*
+_dump-*.mjs
+.DS_Store
+Thumbs.db

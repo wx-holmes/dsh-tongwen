@@ -1,0 +1,39 @@
+{
+  "name": "dsh-tongwen",
+  "version": "0.4.7",
+  "type": "module",
+  "description": "书同文·车同轨 —— 九档统一收纳、机器/用户双份交接与会话变更报告",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "handoff",
+    "archive"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wx-holmes/dsh-tongwen.git"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "smoke": "node scripts/smoke-core.mjs && node scripts/smoke-tools.mjs && node scripts/smoke-session.mjs && node scripts/smoke-cross-session.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

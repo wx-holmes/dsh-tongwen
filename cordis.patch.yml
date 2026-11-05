@@ -1,0 +1,10 @@
+- insert:
+    - id: tongwen
+      name: dsh-tongwen
+      config:
+        # 九档铺在这个目录下。root 不属于 settings.json 的冻结字段（§15.1），
+        # 它是安装位置，由安装器/安装者写。
+        #
+        # 装到别的机器上时改这一行；留空（""）则落到 <用户主目录>/tongwen。
+        # 填了但那个盘不存在时，也会自动回退到 <用户主目录>/tongwen 并在简报里说一句。
+        root: "C:\\tongwen"
