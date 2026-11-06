@@ -1,4 +1,25 @@
 # 变更日志
+## 0.5.22（2026-11-06，重启提速：提前档前先杀掉旧定时器，不再被自己补刀）
+
+### 背景
+你 22:35：「弄完之后我感觉还是要优化一下重启，太慢了。」——实测一次重启从断到恢复要 ~180 秒。现场（`restart-request.log` 与 `watchdog.log`）看到 22:32:13 和 22:32:53 **两次杀进程**：握手式提前档把 90 秒换成了 25 秒，但原来那个 90 秒的临时脚本还在睡着，到点又杀了一次刚被看门狗拉起来的 DSH。
+
+### 根因
+`restart-dsh-later.ps1` 每次写一个 `%TEMP%\dsh-restart-delay-<guid>.ps1`（`Start-Sleep` 到点才杀），然后重新注册计划任务。脚本里的 `Unregister-ScheduledTask` 只删任务注册，**杀不掉已经在跑的那个 pwsh**。`lib/handshake.js` 的 `maybePromote()` 调 `schedule()` 换提前档时，旧定时器就成了「补刀侠」。
+
+### 变更
+- `lib/restart.js` 新增 `killRestartTimers()`：按命令行匹配 `dsh-restart-delay-<32位hex>.ps1` 找出还睡着的定时 pwsh 并 `Stop-Process`，返回被杀的 pid。
+- `scheduleRestart()` 在真正排程之前先调用它（`dryRun` 不杀）；`unscheduleRestartTask()` 取消时也调用——cancel 之后不该还留一颗定时炸弹。
+- 冒烟加一条：`TONGWEN_NO_SCHTASKS=1` 时它必须返回 `skipped` 且 `killed: []`，冒烟绝不杀机器上的进程。
+- 机器上实测：起一个假定时器（`Start-Sleep 300`）→ 调 `killRestartTimers()` → 返回 `killed:[26196]`，进程确实没了，`%TEMP%` 里无残留。
+
+### 口径
+- 预排的重启计划只有**最后一份**有效：排新的之前先撤旧的，不只是撤任务注册。
+- 杀进程只认文件名模式与 pwsh 进程，不碰 DSH 自身；冒烟环境一律跳过。
+
+### 测试
+四套 **106 全过**：core 37 / tools 41（新增一条 killRestartTimers 跳过用例）/ session 13 / cross-session 15。
+
 ## 0.5.21（2026-11-06，同类项合并：插件的手册合成一页《插件的自我管理》，相关性直指这一页）
 
 ### 背景

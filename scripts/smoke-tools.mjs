@@ -1098,6 +1098,13 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(cancelled.ok, true, cancelled.message)
     assert.equal(restart.pendingBroadcastSync({ root }), null)
 
+    // 0.5.22：排新的 / 取消之前要先杀掉还在睡的旧定时器（否则提前档会被旧天花板补刀）。
+    // 冒烟里 TONGWEN_NO_SCHTASKS=1，只验「跳过且不杀」，真杀进程在机器上手动验过。
+    const timers = restart.killRestartTimers()
+    assert.equal(timers.ok, true, timers.output)
+    assert.deepEqual(timers.killed, [], '冒烟环境不该杀任何进程')
+    assert.match(String(timers.output), /skipped/)
+
     // 0.5.2 回归（别的时空报的 bug）：重启完成后，旧广播不能还在喊「重启进行中」。
     // 判据是「etaAt 早于本进程出生」——这里注入 loadedAt 模拟新进程。
     const fresh = await restart.writeBroadcast({ root }, { by: 'smoke', reason: '已完成的重启', delaySec: 30 })
