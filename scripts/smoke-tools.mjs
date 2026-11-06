@@ -1436,6 +1436,28 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.ok(broken.errors.some((e) => e.includes('priority 重复')), '要报 priority 重复')
   })
 
+  await check('0.5.26 点名项目时自动带项目白板（当前一棒/挂账给行号），不点名就不推 projects', async () => {
+    await fsp.mkdir(path.join(root, 'handoff', 'projects'), { recursive: true })
+    const filler = '这是一段无关的历史记录，用来把小节顶到很后面。\n'.repeat(120)
+    await fsp.writeFile(
+      path.join(root, 'handoff', 'projects', 'smoke-project.md'),
+      `# 冒烟项目\n\n## 目标\n只做冒烟。\n\n## 历史\n${filler}\n## 当前一棒\n接着做 0.5.27。\n\n## ⚠ 挂账\n一条待清。\n`,
+      'utf8',
+    )
+    const focused = await call('focus_context', { task: '随便看看', project: 'smoke-project' })
+    assert.equal(focused.ok, true, focused.message)
+    const board = focused.read.find((d) => d.path === 'handoff/projects/smoke-project.md')
+    assert.ok(board, '点名项目要把该项目的白板带上')
+    assert.ok(board.headings.some((h) => String(h.text).includes('当前一棒')), '当前一棒在很后面也要指到行号')
+    assert.ok(board.headings.some((h) => String(h.text).includes('挂账')), '挂账行也要指出来')
+    const noProject = await call('focus_context', { task: '随便看看' })
+    assert.equal(
+      noProject.read.some((d) => String(d.path).startsWith('handoff/projects/')),
+      false,
+      '没点名项目时不要把 projects 整个推出去',
+    )
+  })
+
   const failed = checks.filter((item) => !item.ok)
   for (const item of checks) {
     console.log(`${item.ok ? '✓' : '✗'} ${item.name}${item.ok ? '' : ` — ${item.error}`}`)
