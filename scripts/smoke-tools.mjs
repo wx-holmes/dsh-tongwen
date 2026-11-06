@@ -1357,7 +1357,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(missing.errorCode, 'E_VALIDATION_BLOCKING')
   })
 
-  await check('0.5.24 相关性主题表：九档全覆盖（16 大类）、教训与日档动态预读、优先级唯一', async () => {
+  await check('0.5.24/0.5.27 相关性主题表：九档全覆盖（17 大类）、教训/日档/项目白板动态预读、优先级唯一', async () => {
     const relevance = await import('../lib/relevance.js')
 
     // ① 表本身没写坏：id/priority 不重复、tier 认识、每类至少一页文档或一条动态目录
@@ -1367,11 +1367,11 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
 
     // ② 清点：15 个主题 + 兜底 = 16 大类，按 priority 从高到低
     const table = relevance.topicTable()
-    assert.equal(table.length, 16, '15 个主题 + 兜底 = 16 大类')
+    assert.equal(table.length, 17, '16 个主题 + 兜底 = 17 大类')
     assert.deepEqual(
       table.map((t) => t.id),
       [
-        'handoff', 'plugin', 'publish', 'lessons', 'self', 'files', 'restart', 'logs',
+        'handoff', 'project', 'plugin', 'publish', 'lessons', 'self', 'files', 'restart', 'logs',
         'ledger', 'created', 'incoming', 'downloads', 'config', 'scratch', 'archive', 'general',
       ],
     )
@@ -1391,6 +1391,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     // ④ 动态文档：教训按任务挑、日档按日期挑，都不是死名单
     assert.equal(table.find((t) => t.id === 'lessons').dynamic, true, '教训日记要按任务动态挑')
     assert.equal(table.find((t) => t.id === 'self').dynamic, true, '日档要按日期动态挑')
+    assert.equal(table.find((t) => t.id === 'project').dynamic, true, '项目白板要按任务动态挑')
 
     // ⑤ 同分时按 priority 定先后：交接（94）比文件存放（74）靠前
     const tie = relevance.detectTopics('交接 文件')
@@ -1455,6 +1456,26 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
       noProject.read.some((d) => String(d.path).startsWith('handoff/projects/')),
       false,
       '没点名项目时不要把 projects 整个推出去',
+    )
+  })
+
+  await check('0.5.27 项目白板自动预读：任务提到项目名就带该白板，不相关就不带', async () => {
+    await fsp.mkdir(path.join(root, 'handoff', 'projects'), { recursive: true })
+    await fsp.writeFile(
+      path.join(root, 'handoff', 'projects', 'tongwen-plugin.md'),
+      '# 书同文 0.5.99\n\n## 当前一棒\n继续弄插件。\n\n## ⚠ 挂账\n无。\n',
+      'utf8',
+    )
+    const autoBoard = await call('focus_context', { task: '书同文插件' })
+    const board = autoBoard.read.find((d) => d.path === 'handoff/projects/tongwen-plugin.md')
+    assert.ok(board, '任务提到项目名要自动带白板')
+    assert.equal(board.auto, true, '自动带的白板要标记 auto')
+    assert.ok(board.headings.some((h) => String(h.text).includes('当前一棒')), '自动带的也要指到当前一棒')
+    const unrelated = await call('focus_context', { task: '今天天气' })
+    assert.equal(
+      unrelated.read.some((d) => String(d.path).startsWith('handoff/projects/')),
+      false,
+      '不相关就不推项目白板',
     )
   })
 
