@@ -345,7 +345,7 @@ const TOOL_SPECS = [
   {
     name: 'housekeeping_report',
     description:
-      '生成或重看「过期文件清扫报告」：列出超过保留期的审计日志、账本日报、回收站、临时区文件；只报告不删除，删要主人点头。',
+      '生成或重看「过期文件清扫报告」：列出超过保留期的审计日志、账本日报、回收站、临时区文件；只报告不删除，删要你点头。',
     parameters: {
       force: { type: 'boolean', description: '忽略每周节流，立刻重扫一份。' },
     },
@@ -874,7 +874,7 @@ export function apply(ctx, rawConfig) {
       '⑥ 路径不确定就 locate / inspect_handoff，别猜；只在上面那个根目录里找，别在别处翻旧交接（比如工作区根上的旧 HANDOFF.md）；',
       '⑦ 要写教训就写 handoff/教训日记/<日期>-<主题>.md；要更新这台电脑的状态就改 handoff/任务交接本/当前状态.md；',
       '⑧ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
-      '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；QQ 聊天时空写 self/diary/ 日记，不写日档。',
+      '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；聊天类时空写 self/diary/ 日记，不写日档。',
       '',
     ]
     lines.push(
@@ -899,7 +899,7 @@ export function apply(ctx, rawConfig) {
    *
    * 0.4.4：项目数改成**每轮从磁盘现数**（十来个文件名，代价可忽略）。
    * 以前只读最近一次异步刷新的 peerCache，会跟 project_list 对不上
-   * （主人抓到「开场 13 个 / 实际 14 个」就是这么来的）。
+   * （你抓到「开场 13 个 / 实际 14 个」就是这么来的）。
    *
    * @returns {string[]}
    */
@@ -996,7 +996,7 @@ export function apply(ctx, rawConfig) {
     } catch {
       // 感知失败就退回默认档，别挡住开场
     }
-    out.push(`- 你自己会的事：要重启 DSH 就用 \`restart_dsh\`（action=arm）——它先把「全时空重启」写进广播，别的时空每轮开场都能看到并收尾，再调 \`C:\\safety-kit\\bin\\restart-dsh-later.ps1\` 排程；先回一句「马上重启」再 arm${presenceLine}。看到广播的时空：收完自己那一轮就调 \`restart_dsh(action="ack")\` 报「我收尾了」，别让发起方干等。不要直接跑 restart-dsh.ps1，也不要用 Start-Process/WMI 起延时脚本；规则见 \`C:\\tongwen\\handoff\\手册\\重启.md\`（重启后 GUI 端口会变）`)
+    out.push(`- 你自己会的事：要重启 DSH 就用 \`restart_dsh\`（action=arm）——它先把「全时空重启」写进广播，别的时空每轮开场都能看到并收尾，再调 \`外部重启脚本（safety-kit/bin/restart-dsh-later.ps1）\` 排程；先回一句「马上重启」再 arm${presenceLine}。看到广播的时空：收完自己那一轮就调 \`restart_dsh(action="ack")\` 报「我收尾了」，别让发起方干等。不要直接跑 restart-dsh.ps1，也不要用 Start-Process/WMI 起延时脚本；规则见 \`./tongwen\\handoff\\手册\\重启.md\`（重启后 GUI 端口会变）`)
     const presence = runtime.startup?.presence
     if (presence) {
       out.push(`- 九档：${presence.present?.length ?? 0} 档在位${presence.missing?.length ? `，缺失 ${presence.missing.join('、')}` : ''}${presence.notWritable?.length ? `，不可写 ${presence.notWritable.join('、')}` : ''}`)

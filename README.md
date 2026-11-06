@@ -46,7 +46,7 @@
 | `heartbeat` | 报一次心跳 |
 | `restore` | 从 `archive/trash` 或 `archive/versions` 恢复文件 |
 | `archive_handoff` | 把交接实例整份软删进 `archive/trash`（可 `restore` 找回），并从索引摘掉 |
-| `housekeeping_report` | 生成「过期文件清扫报告」：列审计日志 / 账本日报 / 回收站 / 临时区里超过保留期的文件；只报告不删，删要主人点头（默认每周自动出一份） |
+| `housekeeping_report` | 生成「过期文件清扫报告」：列审计日志 / 账本日报 / 回收站 / 临时区里超过保留期的文件；只报告不删，删要你点头（默认每周自动出一份） |
 | `organ_list` | 列出所有器官（扫插件目录里的 `organ.json`）：会什么能力、危险等级、入口类型；器官信息不进总目录。 |
 | `organ_call` | 神经系统门口：按名片把能力路由到器官。file+read 直读；write/danger 先写 gate 报备给安全插件、拿裁决（超时=拒绝），执行器未接前只回裁决；`dryRun` 只探路。 |
 | `rollback_data` | 把白板/规范/索引页等数据文件回滚到历史版本；备份在 `archive/versions/_data/`，回滚前会再备份当前版，并写 `logs/rollback.log` 与 `handoff/任务交接本/最近回滚.md` |
@@ -129,7 +129,7 @@ handoff/
       config:
         # 改成你自己的目录。留空（""）则落在 <用户主目录>/tongwen。
         # 填的路径建不出来时也会自动回退到 <用户主目录>/tongwen，并在简报里说一句。
-        root: "C:\\tongwen"
+        root: "./tongwen"
 ```
 
 **别直接填盘根**（`"C:\\"`）：Windows 上对盘根做创建会报 EPERM，白填。用一个子目录就行。

@@ -15,7 +15,7 @@ import { scanOrgans, connectPointsOf, probeHeart, lastExecOf } from '../lib/orga
 
 const jsonMode = process.argv.includes('--json');
 
-const ctx = { root: 'C:\\tongwen' };
+const ctx = { root: './tongwen' };
 const organs = await scanOrgans(ctx, {});
 const execs = await lastExecOf(ctx);
 const now = Date.now();

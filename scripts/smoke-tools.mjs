@@ -65,27 +65,29 @@ function createFakeCtx() {
 async function main() {
   // 冒烟里 cancel 广播时不许真去删机器上已排的重启任务。
   process.env.TONGWEN_NO_SCHTASKS = '1'
-  // 发布副本没有本机的「安全插件」verify，用桩替身只验我们这一侧：采集 → 送裁决 → 落盘。
+  // 本仓库不带外部校验器：给一个桩，只验我们这一侧（采集 → 送裁决 → 落盘）。
   const fakeVerify = path.join(os.tmpdir(), 'tongwen-fake-verify.mjs')
-  await fsp.writeFile(fakeVerify, [
-    "let text = ''",
-    "process.stdin.setEncoding('utf8')",
-    "process.stdin.on('data', (c) => { text += c })",
-    "process.stdin.on('end', () => {",
-    '  let payload = {}',
-    '  try { payload = JSON.parse(text) } catch {}',
-    '  const claims = Array.isArray(payload.claims) ? payload.claims : []',
-    '  process.stdout.write(JSON.stringify({',
-    "    verdict: 'allow',",
-    "    by: payload.by || 'fake-verify',",
-    '    total: claims.length,',
-    '    round: 1,',
-    "    summary: '桩：全部当通过',",
-    '    results: claims.map((c) => ({ claim: c.claim, ok: true, actual: \'stub\', ms: 0 })),',
-    '  }))',
-    '})',
-    '',
-  ].join('\n'), 'utf8')
+  await fsp.writeFile(
+    fakeVerify,
+    [
+      "let raw = ''",
+      "process.stdin.on('data', (chunk) => { raw += chunk })",
+      "process.stdin.on('end', () => {",
+      '  const payload = JSON.parse(raw || "{}")',
+      '  const claims = Array.isArray(payload.claims) ? payload.claims : []',
+      '  const out = {',
+      "    verdict: 'allow',",
+      "    by: payload.by || 'fake-verify',",
+      '    total: claims.length,',
+      '    round: 1,',
+      "    summary: '桩：全部当通过',",
+      '    results: claims.map((c) => ({ claim: c.claim, ok: true, actual: "stub", ms: 0 })),',
+      '  }',
+      '  process.stdout.write(JSON.stringify(out))',
+      '})',
+    ].join('\n'),
+    'utf8',
+  )
   process.env.TONGWEN_VERIFY_SCRIPT = fakeVerify
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'tongwen-smoke-'))
   const { ctx, registered, contexts } = createFakeCtx()
@@ -221,7 +223,7 @@ async function main() {
       status: 'done',
       goal: '验证 verify: 行扫描与裁决',
       done: [
-        'verify: file-exists C:\\safety-kit\\bin\\verify.mjs',
+        'verify: file-exists safety-kit 的 bin/verify.mjs',
         'verify: port 31181',
         'verify: 未知类型 foo',
       ],
@@ -268,7 +270,7 @@ async function main() {
       status: 'done',
       goal: '验证 verify 断言的 by 与终止条件',
       done: [
-        'verify: file-exists C:\\safety-kit\\bin\\verify.mjs\n  by: tongwen/xtw-smoke\n  stopOnPass: 是',
+        'verify: file-exists safety-kit 的 bin/verify.mjs\n  by: tongwen/xtw-smoke\n  stopOnPass: 是',
         'verify: port 31181 by=tongwen/xtw-daily maxRounds=3',
         'verify: port 31181',
       ],
@@ -839,7 +841,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(ran.exec.entry.type, 'cli')
     assert.match(ran.exec.stdout, /hi-cli/)
 
-    // 留痕：动手前一行 prepare、做完一行 done（主人定的「留」）
+    // 留痕：动手前一行 prepare、做完一行 done（你定的「留」）
     const execLog = await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8')
     assert.match(execLog, /"phase":"prepare"/)
     assert.match(execLog, /"phase":"done"/)

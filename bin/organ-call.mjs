@@ -18,7 +18,7 @@
  *   --args <JSON>       跑命令的参数数组，或派单给工具的参数对象
  *   --who <名字>        这一下是谁请求的（默认 cli:<pid>），会写进痕迹与派单回执
  *   --timeout <毫秒>    本次最长等待
- *   --root <路径>       交接根目录，默认 C:\tongwen
+ *   --root <路径>       交接根目录，默认 ./tongwen
  *   --roots <路径;路径>  去哪找器官名片（分号分隔），默认与插件一致
  *   --dry-run           只探路：不落盘、不过门、不返回内容
  *   --pretty            缩进输出（给人看；机器读请用默认单行）
@@ -28,7 +28,7 @@
 import process from 'node:process'
 import { organCall } from '../lib/organs.js'
 
-const DEFAULT_ROOT = 'C:\\tongwen'
+const DEFAULT_ROOT = './tongwen'
 
 function parseArgs(argv) {
   const out = { root: DEFAULT_ROOT, who: `cli:${process.pid}` }
@@ -101,12 +101,12 @@ function usage() {
     '  --args <JSON>      命令参数数组，或派单给工具的参数对象',
     '  --who <名字>       谁请求的这一下（写进痕迹与派单回执）',
     '  --timeout <毫秒>   本次最长等待',
-    '  --root <路径>      交接根目录，默认 C:\\tongwen',
+    '  --root <路径>      交接根目录，默认 ./tongwen',
     '  --roots <路径;路径> 去哪找器官名片（分号分隔）',
     '  --dry-run          只探路，不动手',
     '  --pretty           缩进输出',
     '',
-    '出口口径：只读直接做；会改东西的先过安全插件的门（C:\\safety-kit\\state\\gate），',
+    '出口口径：只读直接做；会改东西的先过安全插件的门（./safety-kit/state/gate），',
     '门批了才落到公共那只手；动手前先在 logs/organs-exec.jsonl 留一行。',
     '结果是 JSON：成功 ok:true；失败 ok:false + errorCode + message。',
   ].join('\n')
