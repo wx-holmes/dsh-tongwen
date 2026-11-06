@@ -5,9 +5,11 @@
  */
 
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { apply } from '../index.js'
 import { ulid } from '../lib/ulid.js'
@@ -61,14 +63,38 @@ function createFakeCtx() {
 }
 
 async function main() {
+  // 冒烟里 cancel 广播时不许真去删机器上已排的重启任务。
+  process.env.TONGWEN_NO_SCHTASKS = '1'
+  // 发布副本没有本机的「安全插件」verify，用桩替身只验我们这一侧：采集 → 送裁决 → 落盘。
+  const fakeVerify = path.join(os.tmpdir(), 'tongwen-fake-verify.mjs')
+  await fsp.writeFile(fakeVerify, [
+    "let text = ''",
+    "process.stdin.setEncoding('utf8')",
+    "process.stdin.on('data', (c) => { text += c })",
+    "process.stdin.on('end', () => {",
+    '  let payload = {}',
+    '  try { payload = JSON.parse(text) } catch {}',
+    '  const claims = Array.isArray(payload.claims) ? payload.claims : []',
+    '  process.stdout.write(JSON.stringify({',
+    "    verdict: 'allow',",
+    "    by: payload.by || 'fake-verify',",
+    '    total: claims.length,',
+    '    round: 1,',
+    "    summary: '桩：全部当通过',",
+    '    results: claims.map((c) => ({ claim: c.claim, ok: true, actual: \'stub\', ms: 0 })),',
+    '  }))',
+    '})',
+    '',
+  ].join('\n'), 'utf8')
+  process.env.TONGWEN_VERIFY_SCRIPT = fakeVerify
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'tongwen-smoke-'))
   const { ctx, registered, contexts } = createFakeCtx()
 
   const dispose = apply(ctx, { root })
 
-  await check('注册了 19 个工具', () => {
-    assert.equal(registered.size, 19)
-    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call']) {
+  await check('注册了 20 个工具', () => {
+    assert.equal(registered.size, 20)
+    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call', 'restart_dsh']) {
       assert.ok(registered.has(name), `缺少工具 ${name}`)
     }
   })
@@ -123,6 +149,7 @@ async function main() {
       facts: [{ text: '工具都注册上了', source: '本脚本' }],
       assumptions: ['这条是假设'],
       readFirst: ['先看产物清单'],
+      next: [{ to: 'any', request: '接手的人去看 hello.txt' }],
       attempts: 2,
       factsCited: 3,
       factsWrong: 0,
@@ -143,6 +170,18 @@ async function main() {
     assert.match(machineText, /^## 6\. 建议入口/m)
     assert.match(userText, /^## 5\. 别当真/m)
     assert.ok(!/sha256|SHA-256/.test(userText), '用户版不该出现哈希')
+  })
+
+  await check('0.5.4 next 字段写进两份交接（不再只进信箱/白板）', async () => {
+    const machineText = await fsp.readFile(path.join(root, endResult.machineHandoff), 'utf8')
+    const userText = await fsp.readFile(path.join(root, endResult.userHandoff), 'utf8')
+    assert.match(machineText, /\*\*下一步（交给谁）\*\*/)
+    assert.match(machineText, /接手的人去看 hello\.txt（交给 any）/)
+    assert.match(userText, /接下来是这些/)
+    assert.match(userText, /接手的人去看 hello\.txt（交给 any）/)
+    // 用户版第 3 段原来把 blocked 写成「下次可能要做什么」，0.5.4 改回「卡住的地方」
+    assert.match(userText, /^卡住的地方：/m)
+    assert.ok(!/下次可能要做什么/.test(userText), '别再拿 blocked 冒充下一步')
   })
 
   await check('产物行带存在性与 hashStatus', async () => {
@@ -168,6 +207,199 @@ async function main() {
     assert.equal(row.factsWrong, 0)
     assert.equal(row.passed, true)
     assert.ok(row.taskId, '自评行要有 taskId')
+  })
+
+  await check('0.4.9 verify: 行采集 + 送安全插件裁决（verify-scanned / verify-verdicts）', async () => {
+    const begun = await call('begin_task', {
+      bucket: 'logs',
+      instance: 'smoke-verify',
+      displayName: '冒烟-verify',
+      purpose: '验证 verify: 行扫描与裁决',
+    })
+    assert.equal(begun.ok, true, begun.message)
+    const scanned = await call('end_task', {
+      status: 'done',
+      goal: '验证 verify: 行扫描与裁决',
+      done: [
+        'verify: file-exists C:\\safety-kit\\bin\\verify.mjs',
+        'verify: port 31181',
+        'verify: 未知类型 foo',
+      ],
+      direction: '采集 + 裁决',
+      directionReason: '0.4.9 冒烟',
+      attempts: 1,
+      factsCited: 2,
+      factsWrong: 0,
+    })
+    assert.equal(scanned.ok, true, scanned.message)
+    assert.ok(Array.isArray(scanned.verifyClaims), '返回体应带 verifyClaims')
+    assert.equal(scanned.verifyClaims.length, 3)
+    const file = path.join(root, 'logs', 'verify-scanned.jsonl')
+    const rows = (await fsp.readFile(file, 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((item) => item.entryId === scanned.entryId)
+    assert.equal(rows.length, 3, '三条 verify: 行都要登记')
+    assert.equal(rows.find((r) => r.type === 'file-exists')?.parsed, true)
+    assert.equal(rows.find((r) => r.type === 'port')?.target, '31181')
+    assert.equal(rows.find((r) => r.type === '未知类型')?.parsed, false, '不认识的白名单外类型要标 parsed=false')
+    // 0.4.9：白名单内的断言要真送安全插件，裁决落 logs/verify-verdicts.jsonl
+    const verdicts = (await fsp.readFile(path.join(root, 'logs', 'verify-verdicts.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((item) => item.entryId === scanned.entryId)
+    assert.equal(verdicts.length, 1, '每次归档只写一条裁决')
+    assert.equal(verdicts[0].total, 2, '只把白名单内、解析成功的两条送过去')
+    assert.ok(['allow', 'deny'].includes(verdicts[0].verdict), '裁决只能是 allow/deny')
+    assert.equal(scanned.verifyVerdict?.verdict, verdicts[0].verdict, '返回体要带同一条裁决')
+  })
+
+  await check('0.5.16 断言契约：by + 终止条件能读出来（缩进子字段 / 行尾 key=value），缺了只记不拦', async () => {
+    const begun = await call('begin_task', {
+      bucket: 'logs',
+      instance: 'smoke-verify-contract',
+      displayName: '冒烟-断言契约',
+      purpose: '验证 verify 断言的 by 与终止条件',
+    })
+    assert.equal(begun.ok, true, begun.message)
+    const scanned = await call('end_task', {
+      status: 'done',
+      goal: '验证 verify 断言的 by 与终止条件',
+      done: [
+        'verify: file-exists C:\\safety-kit\\bin\\verify.mjs\n  by: tongwen/xtw-smoke\n  stopOnPass: 是',
+        'verify: port 31181 by=tongwen/xtw-daily maxRounds=3',
+        'verify: port 31181',
+      ],
+      direction: '断言契约',
+      directionReason: '0.5.16 冒烟：谁派的、什么时候停',
+      attempts: 1,
+      factsCited: 2,
+      factsWrong: 0,
+    })
+    assert.equal(scanned.ok, true, scanned.message)
+    const claims = scanned.verifyClaims ?? []
+    assert.equal(claims.length, 3, '三条断言都要登记')
+
+    // ① 缩进子字段：by + stopOnPass
+    assert.equal(claims[0].type, 'file-exists')
+    assert.equal(claims[0].by, 'tongwen/xtw-smoke', '缩进子字段的 by 要采出来')
+    assert.equal(claims[0].bounded, true, 'stopOnPass 算终止条件')
+    assert.equal(claims[0].contract, 'complete')
+
+    // ② 行尾 key=value：by + maxRounds，且不许混进 target
+    assert.equal(claims[1].type, 'port')
+    assert.equal(claims[1].target, '31181', '行尾 key=value 不能混进 target')
+    assert.equal(claims[1].by, 'tongwen/xtw-daily')
+    assert.equal(claims[1].maxRounds, 3)
+    assert.equal(claims[1].contract, 'complete')
+
+    // ③ 什么都没写：只记不拦
+    assert.equal(claims[2].by, null)
+    assert.equal(claims[2].contract, 'missing-both')
+    const warned = (scanned.warnings ?? []).some((w) => String(w).includes('没写清'))
+    assert.equal(warned, true, '缺 by / 终止条件要有一条软警告，但不许拦归档')
+
+    const rows = (await fsp.readFile(path.join(root, 'logs', 'verify-scanned.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((item) => item.entryId === scanned.entryId)
+    assert.equal(rows.length, 3)
+    assert.equal(rows.find((r) => r.by === 'tongwen/xtw-smoke')?.contract, 'complete')
+
+    // 裁决回执带派单方（安全插件侧记录里 by 取 VERIFY_BY，不给就永远是 unknown）
+    const verdicts = (await fsp.readFile(path.join(root, 'logs', 'verify-verdicts.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((item) => item.entryId === scanned.entryId)
+    assert.equal(verdicts.length, 1, '每次归档只写一条裁决')
+    assert.ok(verdicts[0].by, '裁决要带派单方（by）')
+    assert.equal(scanned.verifyVerdict?.by, verdicts[0].by, '返回体同一条裁决要带同一个 by')
+  })
+
+  await check('0.5.18 next 收字符串 / JSON 字符串也不再静默丢（0.5.4 只认 {request} 对象）', async () => {
+    // ① 换行分隔的纯文本：以前整条丢掉，现在拆成多条并报一句警告
+    await call('begin_task', {
+      bucket: 'logs',
+      instance: 'smoke-next-lines',
+      displayName: '冒烟-next 换行',
+      purpose: '验证 next 的换行字符串写法',
+    })
+    const split = await call('end_task', {
+      status: 'done',
+      goal: '验证 next 换行字符串写法',
+      done: ['next 用换行字符串传'],
+      direction: 'next 归一化',
+      directionReason: '0.5.18 冒烟',
+      next: '字符串写法第一条\n字符串写法第二条',
+      attempts: 1,
+      factsCited: 0,
+      factsWrong: 0,
+    })
+    assert.equal(split.ok, true, split.message)
+    const machineLines = await fsp.readFile(path.join(root, split.machineHandoff), 'utf8')
+    assert.match(machineLines, /字符串写法第一条/, '换行字符串要拆成一条条写进交接')
+    assert.match(machineLines, /字符串写法第二条/)
+    assert.ok(!/字符串写法第一条\\n字符串写法第二条/.test(machineLines), '不能整串塞成一行')
+    assert.ok(
+      (split.warnings ?? []).some((w) => String(w).includes('已按换行/分号拆成 2 条')),
+      '拆行要留一句警告，不能再静默',
+    )
+
+    // ② JSON 字符串：解析成对象数组，to 也要保住
+    await call('begin_task', {
+      bucket: 'logs',
+      instance: 'smoke-next-json',
+      displayName: '冒烟-next JSON',
+      purpose: '验证 next 的 JSON 字符串写法',
+    })
+    const parsed = await call('end_task', {
+      status: 'done',
+      goal: '验证 next JSON 字符串写法',
+      done: ['next 用 JSON 字符串传'],
+      direction: 'next 归一化',
+      directionReason: '0.5.18 冒烟',
+      next: '[{"to":"shenjing-xitong","request":"JSON 写法：接一下口径"}]',
+      attempts: 1,
+      factsCited: 0,
+      factsWrong: 0,
+    })
+    assert.equal(parsed.ok, true, parsed.message)
+    const machineJson = await fsp.readFile(path.join(root, parsed.machineHandoff), 'utf8')
+    const userJson = await fsp.readFile(path.join(root, parsed.userHandoff), 'utf8')
+    assert.match(machineJson, /JSON 写法：接一下口径（交给 shenjing-xitong）/, 'JSON 字符串要解析出 to')
+    assert.match(userJson, /接下来是这些/, '用户版第 4 段也要写到')
+  })
+
+  await check('0.4.8 同一份交接的新旧两种命名在清单里只算一行', async () => {
+    const rel = endResult.machineHandoff
+    const dirRel = path.posix.dirname(rel)
+    const base = path.posix.basename(rel)
+    const summary = base.replace(/^\d{4}-\d{2}-\d{2}-\d{4}-/, '').replace(/\.machine\.md$/, '')
+    const legacyRel = `${dirRel}/${summary}.machine.md`
+    await fsp.copyFile(path.join(root, rel), path.join(root, legacyRel))
+    await call('project_upsert', { id: 'smoke-dedupe', title: '去重回归', status: 'active' })
+    const text = await fsp.readFile(path.join(root, 'handoff', 'README.md'), 'utf8')
+    const rows = text
+      .split('\n')
+      .filter((line) => line.startsWith('| ') && line.includes(summary))
+    assert.equal(rows.length, 1, `同一份交接只能有一行（实际 ${rows.length} 行：${rows.join(' / ')}）`)
+    assert.ok(rows[0].includes(base), '应保留新命名那份，而不是旧命名副本')
+
+    // 0.5.3：只有旧命名、没有新命名、也没进索引的那份，不许再标「在办」（以前叫幽灵条目）
+    const ghostRel = `${dirRel}/幽灵样子.machine.md`
+    await fsp.copyFile(path.join(root, rel), path.join(root, ghostRel))
+    await call('project_upsert', { id: 'smoke-dedupe', title: '去重回归', status: 'active' })
+    const text2 = await fsp.readFile(path.join(root, 'handoff', 'README.md'), 'utf8')
+    const ghostRow = text2.split('\n').find((line) => line.startsWith('| ') && line.includes('幽灵样子'))
+    assert.ok(ghostRow, 'README 里应该有幽灵样子那一行')
+    assert.ok(ghostRow.includes('历史·旧命名副本'), `旧命名副本要标「历史·旧命名副本」，实际：${ghostRow}`)
+    const indexText = await fsp.readFile(path.join(root, 'handoff', '索引', '交接索引.md'), 'utf8')
+    assert.match(indexText, /已按内容去重/, '交接索引要写清「去重后份数 / 磁盘份数」两个口径')
+    await fsp.unlink(path.join(root, ghostRel)).catch(() => {})
   })
 
   await check('list_handoffs 能看到这个实例', async () => {
@@ -336,16 +568,31 @@ async function main() {
     assert.ok(files.length > 0)
   })
 
-  await check('交接总目录：README 按权重排「文件/插件/工具/A盘/在办/清单/已归档」并链到索引页，且明确别全读（0.3.15 回归）', async () => {
+  await check('交接总目录：README 权重排「在办/清单/文件/插件/工具/A盘/已归档」并链到索引页，且明确别全读（0.5.2 回归）', async () => {
     const text = await fsp.readFile(path.join(root, 'handoff', 'README.md'), 'utf8')
     assert.match(text, /交接总目录/)
-    assert.match(text, /## 一 · 文件（100）/)
-    assert.match(text, /## 二 · 插件（90）/)
-    assert.match(text, /## 三 · 工具（80）/)
-    assert.match(text, /## 四 · A 盘（70）/)
-    assert.match(text, /## 五 · 在办（60）· 当前一棒/)
-    assert.match(text, /## 六 · 清单（50）/)
-    assert.match(text, /## 七 · 已归档（40）/)
+    // 0.5.2：权重改了——新时空第一眼要看到「我现在接哪件事」（在办），其次才是清单和找东西。
+    const order = [
+      '## 一 · 在办（100）· 当前一棒',
+      '## 二 · 清单（90）',
+      '## 三 · 文件（80）',
+      '## 四 · 插件（70）',
+      '## 五 · 工具（60）',
+      '## 六 · A 盘（50）',
+      '## 七 · 已归档（10）',
+    ]
+    let cursor = -1
+    for (const heading of order) {
+      const at = text.indexOf(heading)
+      assert.ok(at >= 0, `缺小节：${heading}`)
+      assert.ok(at > cursor, `小节顺序不对：${heading} 应该排在后面（权重从高到低）`)
+      cursor = at
+    }
+    // 0.4.8：隐私清洗规范要出现在「三 · 文件」里，否则新时空不知道活目录不能直推。
+    assert.match(text, /上传仓库前的隐私清洗/, '文件段里要登记隐私清洗规范')
+    assert.match(text, /handoff\/手册\/上传仓库前的隐私清洗\.md/, '要给出规范路径')
+    // 顶部权重行也要跟着改，别写着一套、排着另一套。
+    assert.match(text, /一·在办 100 → 二·清单 90 → 三·文件 80 → 四·插件 70 → 五·工具 60 → 六·A盘 50 → 七·已归档 10/)
     assert.match(text, /handoff\/索引\/文件目录\.md/, '要链到索引页')
     assert.match(text, /handoff\/教训日记\//, '要写清教训放哪')
     assert.match(text, /handoff\/索引\/教训索引\.md/, '要链到教训索引')
@@ -432,7 +679,7 @@ async function main() {
     assert.equal(archived.structured.status, 'done')
 
     const afterReadme = await fsp.readFile(path.join(root, 'handoff', 'README.md'), 'utf8')
-    assert.match(afterReadme, /## 七 · 已归档（40）/)
+    assert.match(afterReadme, /## 七 · 已归档（10）/)
     assert.match(afterReadme, /冒烟项目/)
     assert.ok(
       !afterReadme.includes('- **[P1] 冒烟项目**'),
@@ -524,7 +771,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
 })
 
   // 器官系统 v0（0.4.0）：扫名片、读事件、门口路由；0.4.3：write/danger 走安全插件 gate
-  await check('器官系统：file/read 直读、write/danger 走 gate 拿裁决、事件进账本（0.4.0/0.4.3 回归）', async () => {
+  await check('器官系统：file/read 直读、write/danger 走 gate、门批后落到公共的手真做事（0.4.0/0.4.3/0.5.8 回归）', async () => {
     const organsLib = await import('../lib/organs.js')
     const organRoot = path.join(root, 'plug-root')
     const organDir = path.join(organRoot, 'echo')
@@ -538,13 +785,18 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
         { name: 'echo.read', entry: { type: 'file', path: 'note.txt' }, sideEffect: 'read' },
         { name: 'echo.write', entry: { type: 'file', path: 'note.txt' }, sideEffect: 'write' },
         { name: 'echo.rm', entry: { type: 'file', path: 'note.txt' }, sideEffect: 'danger' },
+        { name: 'echo.cli', entry: { type: 'cli', command: process.execPath, args: ['-e', 'console.log("hi-cli")'] }, sideEffect: 'write' },
+        { name: 'echo.readcli', entry: { type: 'cli', command: process.execPath, args: ['-e', 'console.log("nope")'] }, sideEffect: 'read' },
+        // 0.5.9：tool 类手是「模型手里的工具」，插件按不动，只派单
+        { name: 'echo.tool', entry: { type: 'tool', tool: 'mcp__smoke__press' }, sideEffect: 'write' },
       ],
       events: { path: 'events.jsonl' },
     }), 'utf8')
     await fsp.writeFile(path.join(organDir, 'note.txt'), 'hello organ\n', 'utf8')
-    await fsp.appendFile(path.join(organDir, 'events.jsonl'), JSON.stringify({ ts: '2026-11-05T00:00:00.000Z', type: 'task.done', severity: 'info', subject: 'smoke' }) + '\n', 'utf8')
+    // 0.5.12：事件带 id 与 payload.owner（外部插件 0.1.0 的格式）
+    await fsp.appendFile(path.join(organDir, 'events.jsonl'), JSON.stringify({ ts: '2026-11-05T00:00:00.000Z', id: 'evt-smoke-1', type: 'task.done', severity: 'info', subject: 'smoke', payload: { owner: 'smoke-profile' } }) + '\n', 'utf8')
 
-    const ctx = { root }
+    const ctx = { root, sessionId: 'session-smoke' }
     const gateDir = path.join(root, 'gate')
     await fsp.mkdir(gateDir, { recursive: true })
     const cfg = { 'organs.roots': organRoot, 'organs.gateDir': gateDir, 'organs.gateTimeoutMs': 400 }
@@ -557,26 +809,69 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(read.ok, true)
     assert.match(read.content, /hello organ/)
 
-    // write：起一个假安全插件，扫到 request 就回 allow；门口拿到 allow 后应回「执行器未接」而不是假装执行
-    const allowPending = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.write' })
-    const stub = (async () => {
-      const deadline = Date.now() + 2000
-      while (Date.now() < deadline) {
-        const files = await fsp.readdir(gateDir).catch(() => [])
-        const req = files.find((f) => f.endsWith('.request.json'))
-        if (req) {
-          const id = req.slice(0, -'.request.json'.length)
-          await fsp.writeFile(path.join(gateDir, `${id}.ack.json`), JSON.stringify({ id, verdict: 'allow', reason: 'smoke stub', by: 'stub' }), 'utf8')
-          return
+    // write：起一个假安全插件，扫到 request 就回 allow；门批了以后应真写文件（0.5.8：手是共用的）
+    const allowNextGate = () =>
+      (async () => {
+        const deadline = Date.now() + 2000
+        while (Date.now() < deadline) {
+          const files = await fsp.readdir(gateDir).catch(() => [])
+          const req = files.find((f) => f.endsWith('.request.json'))
+          if (req) {
+            const id = req.slice(0, -'.request.json'.length)
+            await fsp.writeFile(path.join(gateDir, `${id}.ack.json`), JSON.stringify({ id, verdict: 'allow', reason: 'smoke stub', by: 'stub' }), 'utf8')
+            return
+          }
+          await new Promise((r) => setTimeout(r, 20))
         }
-        await new Promise((r) => setTimeout(r, 20))
-      }
-    })()
-    const allowed = await allowPending
-    await stub
-    assert.equal(allowed.ok, false)
-    assert.equal(allowed.errorCode, 'UNSUPPORTED_ENTRY')
-    assert.equal(allowed.data.gate.verdict, 'allow')
+      })()
+    const writePending = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.write', content: 'written by hand\n' })
+    await allowNextGate()
+    const written = await writePending
+    assert.equal(written.ok, true)
+    assert.equal(written.exec.entry.type, 'file')
+    assert.match(await fsp.readFile(path.join(organDir, 'note.txt'), 'utf8'), /written by hand/)
+
+    // cli：同一份公共代码跑命令（输出回执里带 stdout）
+    const cliPending = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.cli' })
+    await allowNextGate()
+    const ran = await cliPending
+    assert.equal(ran.ok, true)
+    assert.equal(ran.exec.entry.type, 'cli')
+    assert.match(ran.exec.stdout, /hi-cli/)
+
+    // 留痕：动手前一行 prepare、做完一行 done（主人定的「留」）
+    const execLog = await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8')
+    assert.match(execLog, /"phase":"prepare"/)
+    assert.match(execLog, /"phase":"done"/)
+
+    // tool 类（0.5.9）：门批了之后不假装执行，只派单——回执写清工具名与参数
+    const toolPending = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.tool', args: { text: 'hey' } })
+    await allowNextGate()
+    const delegated = await toolPending
+    assert.equal(delegated.ok, true)
+    assert.equal(delegated.needsActor, true)
+    assert.equal(delegated.exec.executed, false)
+    assert.equal(delegated.exec.mode, 'delegated')
+    assert.equal(delegated.exec.tool, 'mcp__smoke__press')
+    assert.deepEqual(delegated.exec.args, { text: 'hey' })
+    assert.match(delegated.message, /mcp__smoke__press/)
+    assert.match(await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8'), /"phase":"delegated"/)
+
+    // 0.5.11：args 传成 JSON 字符串也认（安全插件 06:20 报过 args 回执为 null）
+    const toolPending2 = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.tool', args: '{"text":"as-string"}' })
+    await allowNextGate()
+    const delegated2 = await toolPending2
+    assert.deepEqual(delegated2.exec.args, { text: 'as-string' })
+
+    // 0.5.12：派单回执带 who（谁请求的这一下），痕迹里也留
+    assert.equal(delegated.who, 'session-smoke')
+    assert.equal(delegated.exec.who, 'session-smoke')
+    assert.match(await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8'), /"who":"session-smoke"/)
+
+    // 只读能力不许跑命令（要跑必须声明 write/danger 先过门）
+    const readCli = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.readcli' })
+    assert.equal(readCli.ok, false)
+    assert.equal(readCli.errorCode, 'UNSUPPORTED_ENTRY')
 
     // danger 且没人回执：超时按拒绝
     const denied = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.rm' })
@@ -599,9 +894,407 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(ingested, 1)
     const ledger = await fsp.readFile(path.join(root, 'logs', '账本', 'data', 'records.jsonl'), 'utf8')
     assert.match(ledger, /"type":"organ"/)
+    // 0.5.12：eventId 与 owner（payload.owner 提到顶层）都入账
+    assert.match(ledger, /"eventId":"evt-smoke-1"/)
+    assert.match(ledger, /"owner":"smoke-profile"/)
+
+    // 0.5.12：同一件事只入账一次——把 offset 拨回 0（模拟回退/重读），id 去重应挡住
+    const stateFile = path.join(root, 'logs', 'organs-state.json')
+    const st = JSON.parse(await fsp.readFile(stateFile, 'utf8'))
+    st.organs.echo.offset = 0
+    await fsp.writeFile(stateFile, JSON.stringify(st), 'utf8')
+    assert.equal(await organsLib.ingestOrganEvents({ root }, cfg), 0)
   })
 
-const failed = checks.filter((item) => !item.ok)
+  await check('脉搏与手迹：心真去量 mtime、手查 organs-exec.jsonl 分得清做过/派单（0.5.10）', async () => {
+    const organsLib = await import('../lib/organs.js')
+    const pulseRoot = path.join(root, 'pulse-root')
+    const pulseDir = path.join(pulseRoot, 'pulse')
+    await fsp.mkdir(pulseDir, { recursive: true })
+    await fsp.writeFile(path.join(pulseDir, 'organ.json'), JSON.stringify({
+      id: 'pulse',
+      name: '脉搏器',
+      version: '0.9.0',
+      kind: 'inner',
+      abilities: [{ name: 'pulse.read', entry: { type: 'file', path: 'note.txt' }, sideEffect: 'read' }],
+      events: { path: 'ev.jsonl' },
+      health: { path: 'beat.txt', ttlMs: 60 * 1000 },
+    }), 'utf8')
+    await fsp.writeFile(path.join(pulseDir, 'note.txt'), 'beat\n', 'utf8')
+    await fsp.writeFile(path.join(pulseDir, 'ev.jsonl'), '', 'utf8')
+    await fsp.writeFile(path.join(pulseDir, 'beat.txt'), 'alive\n', 'utf8')
+
+    const ctx2 = { root }
+    const cfg2 = { 'organs.roots': pulseRoot }
+    const beat = await organsLib.probeHeart({ health: { path: path.join(pulseDir, 'beat.txt'), ttlMs: 60000 } })
+    assert.equal(beat.present, true)
+    assert.equal(beat.alive, true)
+    assert.equal(beat.missing, false)
+
+    // health 文件没注册 → present:false；文件没了 → missing:true 且 alive:false
+    const noHeart = await organsLib.probeHeart({ abilities: [] })
+    assert.equal(noHeart.present, false)
+    await fsp.unlink(path.join(pulseDir, 'beat.txt'))
+    const gone = await organsLib.probeHeart({ health: { path: path.join(pulseDir, 'beat.txt'), ttlMs: 60000 } })
+    assert.equal(gone.present, true)
+    assert.equal(gone.missing, true)
+    assert.equal(gone.alive, false)
+    // 恢复一个有脉搏的文件（后两段要用）
+    await fsp.writeFile(path.join(pulseDir, 'beat.txt'), 'alive again\n', 'utf8')
+
+    // 手迹：先只有一次真做成（done/ok）→ handUsed，不算 delegated
+    const execPath = path.join(root, 'logs', 'organs-exec.jsonl')
+    await fsp.mkdir(path.dirname(execPath), { recursive: true })
+    await fsp.writeFile(execPath, JSON.stringify({ at: new Date().toISOString(), organ: 'pulse', ability: 'pulse.read', phase: 'done', ok: true }) + '\n', 'utf8')
+    const used = await organsLib.organList({ ctx: ctx2, config: cfg2 })
+    assert.equal(used.organs[0].heart.alive, true)
+    assert.equal(used.organs[0].lastExec.phase, 'done')
+    assert.deepEqual(used.integration.handUsed, ['pulse'])
+    assert.deepEqual(used.integration.handDelegated, [])
+    assert.deepEqual(used.integration.staleHeart, [])
+
+    // 再追加一次派单 → 最近一条变 delegated：手没真按，handUsed 清空
+    await fsp.appendFile(execPath, JSON.stringify({ at: new Date().toISOString(), organ: 'pulse', ability: 'pulse.read', phase: 'delegated', ok: true, tool: 'mcp__smoke__press' }) + '\n', 'utf8')
+    const delegatedOnly = await organsLib.organList({ ctx: ctx2, config: cfg2 })
+    assert.equal(delegatedOnly.organs[0].lastExec.phase, 'delegated')
+    assert.equal(delegatedOnly.organs[0].lastExec.tool, 'mcp__smoke__press')
+    assert.deepEqual(delegatedOnly.integration.handUsed, [])
+    assert.deepEqual(delegatedOnly.integration.handDelegated, ['pulse'])
+
+    // 心跳过 ttl → staleHeart 点名
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await fsp.utimes(path.join(pulseDir, 'beat.txt'), old, old)
+    const stale = await organsLib.organList({ ctx: ctx2, config: cfg2 })
+    assert.equal(stale.organs[0].heart.alive, false)
+    assert.deepEqual(stale.integration.staleHeart, ['pulse'])
+  })
+
+  await check('三层信息：手册总览 / 动态白板跟总目录一起生成（0.5.0）', async () => {
+    const layers = await import('../lib/layers.js')
+    const pageCtx = {
+      root,
+      projectsDir: path.join(root, 'handoff', 'projects'),
+      inboxFile: path.join(root, 'handoff', 'inbox.jsonl'),
+    }
+    // 临时根里先放两条规矩（含插件接入契约），手册总览才会有表、并验证契约钉在最前
+    await fsp.mkdir(path.join(root, 'handoff', '手册'), { recursive: true })
+    await fsp.writeFile(
+      path.join(root, 'handoff', '手册', '示例规矩.md'),
+      '# 示例规矩\n\n> 一句话：冒烟用的假规矩\n\n正文一段。\n',
+      'utf8',
+    )
+    await fsp.writeFile(
+      path.join(root, 'handoff', '手册', '插件接口与合体契约.md'),
+      '# 插件接口与合体契约\n\n> 一句话：冒烟用的假契约\n\n正文一段。\n',
+      'utf8',
+    )
+    const norms = await layers.renderNormsPage(pageCtx)
+    assert.match(norms, /规矩清单/)
+    // 0.5.3：读序写死在手册总览最上面（权重 规矩 100 ＞ 现在 90 ＞ 目录 80），且排在接入契约之前
+    assert.match(norms, /先读哪一块（权重写死/, '手册总览顶部没有「先读哪一块」块')
+    assert.match(norms, /100/, '手册总览没写板块权重')
+    assert.ok(norms.indexOf('先读哪一块') < norms.indexOf('接入契约'), '「先读哪一块」必须排在接入契约之前')
+    // 0.5.1：接入契约钉在规矩清单最上面（做插件的时空第一眼就看到）
+    assert.match(norms, /接入契约（所有做插件的时空必读/, '手册总览顶部没有接入契约块')
+    assert.ok(norms.indexOf('插件接口与合体契约') < norms.indexOf('示例规矩'), '插件契约没钉在最前')
+    // 前面建的项目多半已经 done 归档；这里另起一个在办的，确认动态白板真带上「当前一棒」
+    const layered = await call('project_upsert', {
+      id: 'smoke-layers',
+      title: '分层冒烟',
+      goal: '确认动态白板带上在办项目',
+      to: 'any',
+      action: '读三层信息',
+    })
+    assert.equal(layered.ok, true, layered.message)
+    const problems = await layers.writeLayers(pageCtx)
+    assert.deepEqual(problems, [], `写三层失败：${problems.join('；')}`)
+    const normsFile = await fsp.readFile(path.join(root, 'handoff', '手册总览.md'), 'utf8')
+    assert.match(normsFile, /三层/)
+    const dyn = await fsp.readFile(path.join(root, 'handoff', '动态白板.md'), 'utf8')
+    assert.match(dyn, /动态白板/)
+    assert.match(dyn, /怎么用/)
+    // 动态白板要真的带上在办项目的当前一棒
+    assert.match(dyn, /smoke-layers/, '动态白板没写刚建的在办项目')
+    assert.match(dyn, /读三层信息/, '动态白板没写当前一棒')
+    const readme = await fsp.readFile(path.join(root, 'handoff', 'README.md'), 'utf8')
+    assert.match(readme, /三层信息/)
+    assert.ok(readme.indexOf('手册总览.md') < readme.indexOf('动态白板.md'), 'README 三层导航顺序应当是 手册 → 现在 → 目录')
+  })
+
+  await check('合体四点：名片缺头/缺脚会被点名，三点以上才算接上（0.5.1）', async () => {
+    const organsLib = await import('../lib/organs.js')
+    const full = organsLib.connectPointsOf({
+      abilities: [
+        { name: 'x.status.read', entry: { type: 'file', path: 'a' }, sideEffect: 'read' },
+        { name: 'x.send.write', entry: { type: 'file', path: 'b' }, sideEffect: 'write' },
+      ],
+      events: { path: 'events.jsonl' },
+      health: { path: 'health.json', ttlMs: 60000 },
+    })
+    assert.equal(full.score, 4)
+    assert.deepEqual(full.missing, [])
+
+    const noFoot = organsLib.connectPointsOf({ abilities: [{ name: 'x.read', entry: { type: 'file', path: 'a' } }] })
+    assert.deepEqual(noFoot.missing, ['hand', 'foot', 'heart'], '缺点顺序应是 手/脚/心')
+
+    // organ_list 汇总：四点全的算 connected，缺脚的进 missingFoot
+    const organRoot = path.join(root, 'organs-probe')
+    await fsp.mkdir(path.join(organRoot, 'good'), { recursive: true })
+    await fsp.mkdir(path.join(organRoot, 'bad'), { recursive: true })
+    await fsp.writeFile(
+      path.join(organRoot, 'good', 'organ.json'),
+      JSON.stringify({
+        id: 'good', name: '好器官',
+        abilities: [{ name: 'good.read', entry: { type: 'file', path: 'x' }, sideEffect: 'read' }],
+        events: { path: 'events.jsonl' },
+        health: { path: 'health.json', ttlMs: 1000 },
+      }),
+      'utf8',
+    )
+    await fsp.writeFile(
+      path.join(organRoot, 'bad', 'organ.json'),
+      JSON.stringify({
+        id: 'bad', name: '坏器官',
+        abilities: [{ name: 'bad.read', entry: { type: 'file', path: 'x' }, sideEffect: 'read' }],
+      }),
+      'utf8',
+    )
+    const listed = await organsLib.organList({ ctx: { root }, config: { 'organs.roots': organRoot } })
+    assert.equal(listed.count, 2)
+    assert.equal(listed.integration.online, 2)
+    assert.deepEqual(listed.integration.missingFoot, ['bad'])
+    assert.equal(listed.integration.connected, 1)
+    const good = listed.organs.find((row) => row.id === 'good')
+    assert.equal(good.connect.score, 3, 'good 应为 头+脚+心 三点')
+  })
+
+  await check('重启广播：arm 写广播、开场/begin_task 带提醒、cancel 收掉（0.5.0）', async () => {
+    const restart = await import('../lib/restart.js')
+    const b = await restart.writeBroadcast({ root }, { by: 'smoke', reason: '单元测试', delaySec: 60 })
+    assert.equal(b.status, 'pending')
+    assert.ok(b.etaAt > Date.now(), '广播没有未来的 etaAt')
+
+    const pending = restart.pendingBroadcastSync({ root })
+    assert.ok(pending && pending.status === 'pending')
+    assert.match(restart.describeBroadcast(pending), /重启广播/)
+
+    const status = await call('restart_dsh', { action: 'status' })
+    assert.equal(status.ok, true, status.message)
+    assert.match(String(status.text), /重启广播/)
+
+    const started = await call('begin_task', { bucket: 'logs', instance: 'smoke-broadcast', purpose: '广播提醒' })
+    assert.equal(started.ok, true, started.message)
+    assert.ok((started.warnings ?? []).some((w) => String(w).includes('重启广播')), 'begin_task 没带广播提醒')
+
+    const cancelled = await call('restart_dsh', { action: 'cancel', reason: '冒烟收尾' })
+    assert.equal(cancelled.ok, true, cancelled.message)
+    assert.equal(restart.pendingBroadcastSync({ root }), null)
+
+    // 0.5.2 回归（别的时空报的 bug）：重启完成后，旧广播不能还在喊「重启进行中」。
+    // 判据是「etaAt 早于本进程出生」——这里注入 loadedAt 模拟新进程。
+    const fresh = await restart.writeBroadcast({ root }, { by: 'smoke', reason: '已完成的重启', delaySec: 30 })
+    const asNewProcess = fresh.etaAt + 1000 // 假设新进程在 eta 之后才起来
+    const afterRestart = restart.readBroadcastSync({ root }, asNewProcess, asNewProcess)
+    assert.equal(afterRestart.status, 'completed', '比本进程早的广播应判 completed')
+    assert.equal(restart.pendingBroadcastSync({ root }, asNewProcess, asNewProcess), null, '重启完的广播不该再提醒')
+    assert.equal(restart.describeBroadcast(afterRestart), '', 'completed 的广播不该再出文案')
+    // 同一进程内（eta 还没到）仍是 pending，不能误伤正在倒计时的广播。
+    const inThisProcess = restart.readBroadcastSync({ root }, fresh.announcedAt, fresh.announcedAt - 1000)
+    assert.equal(inThisProcess.status, 'pending', '本进程排的广播仍是 pending')
+    const primed = await call('restart_dsh', { action: 'status' })
+    assert.equal(primed.ok, true, primed.message)
+    // 再确认开场注入那一行（本进程视角）仍在提醒，然后收尾。
+    assert.match(String(primed.text), /重启广播/, '进行中的广播仍要提醒')
+    await call('restart_dsh', { action: 'cancel', reason: '冒烟收尾 2' })
+  })
+
+  await check('重启分档：按现场自动选 25/45/75 秒（0.5.5 在场感知）', async () => {
+    const presence = await import('../lib/presence.js')
+    const handshake = await import('../lib/handshake.js')
+    const sessions = path.join(root, 'fake-sessions')
+    const now = Date.now()
+    const makeSpace = async (id, ageMs) => {
+      const dir = path.join(sessions, 'default-workspace', id)
+      await fsp.mkdir(dir, { recursive: true })
+      const file = path.join(dir, 'x.jsonl')
+      await fsp.writeFile(file, '{}\n')
+      const t = new Date(now - ageMs)
+      await fsp.utimes(file, t, t)
+    }
+
+    // ① 别的时空都静默 10 分钟 → 快档 25 秒
+    await makeSpace('session-old', 10 * 60 * 1000)
+    let d = presence.decideRestartDelay({ ctx: { root }, selfSessionId: 'session-me', now, root: sessions })
+    assert.equal(d.tier, 'fast')
+    assert.equal(d.delaySec, presence.TIER_FAST_SEC)
+    assert.match(d.reasons.join(' '), /静默超过 5 分钟/)
+
+    // ② 有别的时空 5 秒前动过 → 常档 45 秒
+    await makeSpace('session-warm', 5 * 1000)
+    d = presence.decideRestartDelay({ ctx: { root }, selfSessionId: 'session-me', now, root: sessions })
+    assert.equal(d.tier, 'normal')
+    assert.equal(d.delaySec, presence.TIER_NORMAL_SEC)
+    assert.match(d.reasons.join(' '), /session-warm/)
+
+    // ③ 那个时空开着任务没收尾 → 慢档 75 秒
+    presence.markTaskOpen({ root }, { sessionId: 'session-warm', taskId: 't-1', displayName: '0.5.5 上线' })
+    d = presence.decideRestartDelay({ ctx: { root }, selfSessionId: 'session-me', now, root: sessions })
+    assert.equal(d.tier, 'slow')
+    assert.equal(d.delaySec, presence.TIER_SLOW_SEC)
+    assert.match(d.reasons.join(' '), /开着「0\.5\.5 上线」/)
+
+    // ④ end_task 划掉之后回到常档
+    presence.clearTaskOpen({ root }, 'session-warm')
+    d = presence.decideRestartDelay({ ctx: { root }, selfSessionId: 'session-me', now, root: sessions })
+    assert.equal(d.tier, 'normal', '划掉 open-task 后不该再是慢档')
+
+    // ⑤ 自己不参与判断
+    const spans = presence.scanSpaces({ root: sessions, now, selfSessionId: 'session-warm' })
+    assert.ok(!spans.some((s) => s.sessionId === 'session-warm'), '自己的会话不该算「别人」')
+
+    // ⑥ restart_dsh 不填 delaySec 时走握手模式（0.5.6）：现场没人动 → 直接提前档 25，
+    //    有人在动 → 先排天花板 90，等硬证据（全 ack / 没人挂活且没人在写）由 maybePromote 提前；沉默不算证据（0.5.13）。
+    const auto = await call('restart_dsh', { action: 'arm', reason: '冒烟：握手模式' })
+    assert.equal(auto.ok, true, auto.message)
+    assert.equal(auto.mode, 'auto', `mode 不对：${auto.mode}`)
+    assert.ok([handshake.AUTO_EARLY_SEC, handshake.AUTO_CEILING_SEC].includes(auto.delaySec), `delaySec 不对：${auto.delaySec}`)
+    assert.match(String(auto.autoText || ''), /握手模式/)
+    const spaces = await call('restart_dsh', { action: 'spaces' })
+    assert.equal(spaces.ok, true, spaces.message)
+    assert.ok(Number.isInteger(spaces.total), 'spaces 没回 total')
+    await call('restart_dsh', { action: 'cancel', reason: '冒烟收尾 3' })
+  })
+
+  await check('握手式自动重启：只认硬证据（0.5.13：沉默不算证据）', async () => {
+    const handshake = await import('../lib/handshake.js')
+    const restart = await import('../lib/restart.js')
+    const sessions = path.join(root, 'hs-sessions')
+    const makeSpace = async (id, ageMs) => {
+      const dir = path.join(sessions, 'default-workspace', id)
+      await fsp.mkdir(dir, { recursive: true })
+      const file = path.join(dir, 'x.jsonl')
+      await fsp.writeFile(file, '{}\n')
+      const t = new Date(Date.now() - ageMs)
+      await fsp.utimes(file, t, t)
+    }
+    await makeSpace('session-peer', 3 * 1000)
+    const ctx = { root }
+    const b = await restart.writeBroadcast(ctx, {
+      by: 'me',
+      reason: '冒烟：握手式',
+      delaySec: handshake.AUTO_CEILING_SEC,
+      mode: 'auto',
+      auto: { ceilingSec: handshake.AUTO_CEILING_SEC, earlySec: handshake.AUTO_EARLY_SEC, minReadySec: handshake.AUTO_MIN_READY_SEC },
+    })
+    assert.equal(b.mode, 'auto')
+    // ① 别的时空 3 秒前还在动 → 不能提前
+    let r = handshake.computeReadiness({ ctx, selfSessionId: 'session-me', root: sessions, now: Date.now() })
+    assert.equal(r.active, true)
+    assert.equal(r.ready, false)
+    assert.equal(r.pending.length, 1)
+    assert.match(handshake.describeReadiness(r), /公告才|没停手/)
+    // ①.5 0.5.13 回归：它 10 分钟没动、但还挂着未完成任务 → 沉默不算证据，不能提前
+    const presence = await import('../lib/presence.js')
+    await makeSpace('session-peer', 10 * 60 * 1000)
+    presence.markTaskOpen(ctx, { sessionId: 'session-peer', taskId: 'smoke-silent', displayName: '装死的活', project: 'smoke' })
+    r = handshake.computeReadiness({ ctx, selfSessionId: 'session-me', root: sessions, now: Date.now() + (handshake.AUTO_MIN_READY_SEC + 5) * 1000 })
+    assert.equal(r.ready, false, '沉默不算证据：挂着未完成任务时不许提前')
+    assert.equal(r.evidence, null)
+    assert.ok(r.openTasks.includes('session-peer'), `openTasks 里该有 session-peer：${r.openTasks.join(',')}`)
+    assert.match(handshake.describeReadiness(r), /未完成/)
+    // ①.6 任务清掉、它也没在写 → 这才是证据（quiet）
+    // 同一 ctx.root 下前面用例可能还挂着别人的任务，先全部清干净再验「安静」
+    for (const sid of Object.keys(presence.readOpenTasksSync(ctx))) presence.clearTaskOpen(ctx, sid)
+    r = handshake.computeReadiness({ ctx, selfSessionId: 'session-me', root: sessions, now: Date.now() + (handshake.AUTO_MIN_READY_SEC + 5) * 1000 })
+    assert.equal(r.ready, true, handshake.describeReadiness(r))
+    assert.equal(r.evidence, 'quiet')
+    // ② 它 ack 了 → 等过 minReadySec（注入 now）→ ready
+    await restart.ackBroadcast(ctx, { sessionId: 'session-peer', note: '收尾了' })
+    const later = Date.now() + (handshake.AUTO_MIN_READY_SEC + 5) * 1000
+    r = handshake.computeReadiness({ ctx, selfSessionId: 'session-me', root: sessions, now: later })
+    assert.equal(r.ready, true, handshake.describeReadiness(r))
+    // ③ 提前：把天花板换成 25 秒，并把广播 etaAt 改早
+    let called = null
+    const stub = (opts) => {
+      called = opts
+      return { ok: true, taskReady: true, output: 'stub' }
+    }
+    const promoted = await handshake.maybePromote({ ctx, selfSessionId: 'session-me', root: sessions, now: later, schedule: stub })
+    assert.equal(promoted.promoted, true, promoted.reason)
+    assert.equal(called.delaySec, handshake.AUTO_EARLY_SEC)
+    const after = await restart.readBroadcastSync(ctx, later)
+    assert.equal(after.delaySec, handshake.AUTO_EARLY_SEC)
+    assert.equal(after.promotedDelaySec, handshake.AUTO_EARLY_SEC)
+    assert.ok(after.etaAt < b.etaAt, '广播 etaAt 应该改早')
+    // ④ 不重复提前
+    const again = await handshake.maybePromote({ ctx, selfSessionId: 'session-me', root: sessions, now: later + 3000, schedule: stub })
+    assert.equal(again.promoted, false)
+    // ⑤ 没有广播时什么都不做
+    await call('restart_dsh', { action: 'cancel', reason: '冒烟收尾 4' })
+    const idle = handshake.computeReadiness({ ctx, selfSessionId: 'session-me', root: sessions })
+    assert.equal(idle.active, false)
+  })
+
+  await check('对外入口（CLI）：同一道门口搬到命令行——读直做、坏 JSON 当场拒、未知能力列出已知（0.5.14）', async () => {
+    const pluginDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+    const cliPath = path.join(pluginDir, 'bin', 'organ-call.mjs')
+    const cliSpace = path.join(root, 'cli-space')
+    const cliOrgans = path.join(root, 'cli-organs')
+    await fsp.mkdir(path.join(cliOrgans, 'cli-echo'), { recursive: true })
+    await fsp.writeFile(
+      path.join(cliOrgans, 'cli-echo', 'organ.json'),
+      JSON.stringify(
+        {
+          id: 'cli-echo',
+          name: 'CLI 回声',
+          version: '0.0.1',
+          kind: 'tool',
+          abilities: [
+            { name: 'cli-echo.read', desc: '读一行字', entry: { type: 'file', path: 'hello.txt' }, sideEffect: 'read' },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+    await fsp.writeFile(path.join(cliOrgans, 'cli-echo', 'hello.txt'), 'from-cli\n')
+
+    const runCli = (args) =>
+      new Promise((resolve) => {
+        execFile(process.execPath, [cliPath, ...args], { encoding: 'utf8', windowsHide: true }, (error, stdout) => {
+          const text = String(stdout ?? '').trim()
+          let json = null
+          try {
+            json = JSON.parse(text.split('\n').pop())
+          } catch {
+            json = null
+          }
+          resolve({ code: error?.code ?? 0, json, text })
+        })
+      })
+
+    // ① 读：直接做，不过门
+    const read = await runCli(['--ability', 'cli-echo.read', '--roots', cliOrgans, '--root', cliSpace, '--who', 'smoke-cli'])
+    assert.equal(read.code, 0, read.text)
+    assert.equal(read.json?.ok, true)
+    assert.equal(read.json?.ability, 'cli-echo.read')
+    assert.ok(JSON.stringify(read.json).includes('from-cli'), '要把文件内容读出来')
+
+    // ② --args 不是合法 JSON：当场拒，不落到器官那里
+    const bad = await runCli(['--ability', 'cli-echo.read', '--args', '{oops', '--roots', cliOrgans, '--root', cliSpace])
+    assert.equal(bad.code, 1)
+    assert.equal(bad.json?.errorCode, 'E_ARGUMENT')
+
+    // ③ 未知能力：把已知的列出来，别的时空拼错名字时能自己纠
+    const unknown = await runCli(['--ability', 'nope.nothing', '--roots', cliOrgans, '--root', cliSpace])
+    assert.equal(unknown.code, 1)
+    assert.equal(unknown.json?.errorCode, 'NO_ORGAN')
+    const known = unknown.json?.data?.knownAbilities ?? unknown.json?.knownAbilities
+    assert.ok(Array.isArray(known), '未知能力要把已知的列出来')
+    assert.ok(known.includes('cli-echo.read'), '已知能力里要有这个器官的那条')
+  })
+
+  const failed = checks.filter((item) => !item.ok)
   for (const item of checks) {
     console.log(`${item.ok ? '✓' : '✗'} ${item.name}${item.ok ? '' : ` — ${item.error}`}`)
   }

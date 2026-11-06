@@ -72,9 +72,9 @@ async function main() {
     return spec.execute(args)
   }
 
-  await check('注册了 19 个工具（9 旧 + 8 新 + 2 器官）', () => {
-    assert.equal(registered.size, 19)
-    for (const name of ['project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close']) {
+  await check('注册了 20 个工具（9 旧 + 8 新 + 2 器官 + 重启广播）', () => {
+    assert.equal(registered.size, 20)
+    for (const name of ['project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'restart_dsh']) {
       assert.ok(registered.has(name), `缺少工具 ${name}`)
     }
     for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff']) {
@@ -211,7 +211,7 @@ async function main() {
     assert.match(text, /给你的请求：/)
     // 开场每轮都带（不赌宿主时序，新会话才不会白跑）
     assert.match(text, /开场（每轮都带/)
-    assert.match(text, /再读 handoff\/README\.md/)
+    assert.match(text, /③ 读 handoff\/README\.md/, '开场第三步要读总目录（0.5.3 起是 ③，不再是 ⓪）')
     assert.match(text, /挂账/, '开场没先把挂账顶到第一眼')
     assert.match(text, /handoff\/能力目录\.md/, '开场没提醒先看能力目录')
     assert.match(text, /handoff\/项目总览\.md/, '开场没提醒接活前先看项目总览')
@@ -225,9 +225,29 @@ async function main() {
     assert.ok(text.includes(root), '开场没写当前交接根目录')
     assert.match(text, /别在别处翻旧交接/)
     // 0.4.6：重启只有一条对的路——先回话，再用包装脚本排 30 秒；直接跑 restart-dsh.ps1 会杀掉自己
-    assert.match(text, /可以发起一次延时重启/, '现状里没写延时重启的口径')
-    assert.match(text, /规范[\\/]重启\.md/, '现状里没指到重启规范页')
-    assert.match(text, /别直接杀进程/, '现状没警告不要直接杀自己')
+    assert.match(text, /restart-dsh-later\.ps1/, '现状里没写延时重启包装脚本')
+    assert.match(text, /手册[\\/]重启\.md/, '现状里没指到重启规范页')
+    assert.match(text, /不要直接跑 restart-dsh\.ps1/, '现状没警告不要直接杀自己')
+    // 0.5.0：三层信息 —— 规矩 → 现在 → 目录；重启先广播
+    assert.match(text, /三层/, '开场没写三层信息')
+    assert.match(text, /手册总览\.md/, '开场没把手册版排在第一位')
+    assert.match(text, /动态白板\.md/, '开场没让看动态白板')
+    assert.match(text, /restart_dsh/, '现状里没写重启广播工具')
+    // 三层顺序：手册 → 现在 → 目录（只看「三层信息」那一行，别被开场第 ⓪ 步的 README 干扰）
+    const layerLine = text.split('\n').find((line) => line.includes('三层信息')) ?? ''
+    assert.match(layerLine, /手册总览\.md/, '三层行里没有手册总览')
+    assert.match(layerLine, /动态白板\.md/, '三层行里没有动态白板')
+    assert.match(layerLine, /README\.md/, '三层行里没有总目录')
+    assert.ok(layerLine.indexOf('手册总览.md') < layerLine.indexOf('动态白板.md'), '手册版要排在动态白板前面')
+    assert.ok(layerLine.indexOf('动态白板.md') < layerLine.indexOf('README.md'), '动态白板要排在总目录前面')
+    // 0.5.3：读序写死——权重 规矩 100 ＞ 现在 90 ＞ 目录 80，且①必须排在②③前面、不许再让 README 抢第一步
+    assert.match(text, /读序不许倒/, '开场没写「读序不许倒」')
+    assert.match(text, /100/, '开场没写板块权重')
+    assert.match(text, /第一件事只有一件/, '开场没把「第一件事只有一件（读规矩）」写清楚')
+    const normsIdx = text.indexOf(`① 读 **handoff/手册总览.md**`)
+    const dynIdx = text.indexOf(`② 读 **handoff/动态白板.md**`)
+    assert.ok(normsIdx > 0 && dynIdx > normsIdx, '开场里 ① 手册总览必须排在 ② 动态白板之前')
+    assert.ok(!/⓪ 先看 handoff\/README\.md/.test(text), '0.5.3 起不许再让 README 抢第一步（⓪ 已删）')
     const textAfter = contexts[0].text()
     assert.match(textAfter, /开场（每轮都带/, '开场不该只出现一次')
   })

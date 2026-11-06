@@ -21,6 +21,29 @@ import { writeRuntimeState } from './lib/runtime-state.js'
 import { BUCKET_LIST } from './lib/buckets.js'
 import { listProjects } from './lib/projects.js'
 import { readInbox, mergeInbox } from './lib/inbox.js'
+import { normsCountSync, NORMS_FILE, DYNAMIC_FILE } from './lib/layers.js'
+import {
+  pendingBroadcastSync,
+  describeBroadcast,
+  writeBroadcast,
+  cancelBroadcast,
+  ackBroadcast,
+  scheduleRestart,
+  unscheduleRestartTask,
+  MIN_DELAY_SEC,
+  readBroadcastSync,
+} from './lib/restart.js'
+import { decideRestartDelay, describePresence, markTaskOpen, clearTaskOpen, scanSpaces, readOpenTasksSync } from './lib/presence.js'
+import {
+  AUTO_ACTIVE_MS,
+  AUTO_CEILING_SEC,
+  AUTO_EARLY_SEC,
+  AUTO_MIN_READY_SEC,
+  AUTO_TICK_MS,
+  computeReadiness,
+  describeReadiness,
+  maybePromote,
+} from './lib/handshake.js'
 import {
   envelope,
   failure,
@@ -420,12 +443,177 @@ const TOOL_SPECS = [
   {
     name: 'organ_call',
     description:
-      '神经系统门口：按名片把一个能力路由到对应器官。entry.type=file 且 sideEffect=read 的能力直读；write/danger 先写 gate 报备给安全插件、拿裁决（超时=拒绝），v0.4 只回裁决、执行器还没接。dryRun=true 时只探路不读文件。',
+      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过安全插件的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。',
     parameters: {
       ability: { type: 'string', description: '能力名，例如 chat.send', required: true },
-      dryRun: { type: 'boolean', description: '只探路：返回文件是否存在/多大，不返回内容' },
+      dryRun: { type: 'boolean', description: '只探路：返回文件是否存在/多大、会走哪道门，不返回内容也不动手' },
+      content: { type: 'string', description: '会写东西的能力要用它：写文件的内容，或 http 的请求体' },
+      args: {
+        // 0.5.11：不写死 type——命令要数组、派单要对象，写死一种会把另一种吃掉（安全插件 06:20 报的 args=null 就是这个）
+        description:
+          '参数：跑命令时给数组（接在名片 entry.args 后面，如 ["--n","6"]）；派单给工具时给对象（键值对，会原样抄进回执）。给 JSON 字符串也认。',
+      },
+      timeoutMs: { type: 'integer', description: '这次最多等多久（毫秒，1000–120000，缺省文件不超时、命令 30 秒、请求 10 秒）' },
     },
     execute: organCall,
+  },
+  {
+    name: 'restart_dsh',
+    description:
+      '重启 DSH 的唯一推荐入口（0.5.0 广播，0.5.6 握手式自动收尾，0.5.13 只认硬证据）：先广播、再排程。action=arm 把「全时空重启」写进广播（logs/state/restart-broadcast.json），每个时空下一轮开场都能看到并收尾。**不填 delaySec 就走握手模式**：先按天花板 90 秒排一个一次性任务；别的时空收完自己那轮调 action="ack" 报「我收尾了」；本插件每 3 秒检查一次，**只有拿到硬证据才提前**——要么别的时空全 ack，要么没有任何未完成的 open-task 且没人在写，才撤掉天花板改排 25 秒（最晚 90 秒无论如何断）。**沉默不算证据**：0.5.13 起删掉了「静默 20 秒算停手」那条——干活中的时空跑一条三十秒的命令，从外面看就是静默，06:47 就这样把安全插件杀了。填了 delaySec 就是老行为（固定等）。arm 之前先回用户一句「马上重启」——排程后本回合可能被切断。action=ack 是「我收尾了」的握手回执；action=status 看广播 + 还差谁；action=spaces 看在场的时空；action=cancel 撤销广播并尝试删掉已排的任务（未必成功，会如实说）。',
+    parameters: {
+      action: {
+        type: 'string',
+        description: 'arm=广播并排程；ack=我收尾了（握手）；status=看广播与还差谁；spaces=看在场的时空；cancel=撤销',
+        enum: ['arm', 'ack', 'status', 'spaces', 'cancel'],
+        required: true,
+      },
+      delaySec: {
+        type: 'integer',
+        description: `多少秒后重启。**不填就握手模式**（天花板 ${AUTO_CEILING_SEC} 秒、提前档 ${AUTO_EARLY_SEC} 秒，看别的时空什么时候收手）；手动填就是固定等，也会被抬到最小 ${MIN_DELAY_SEC}。`,
+      },
+      reason: { type: 'string', description: '为什么重启（写进广播，给别的时空看；ack 时当备注）' },
+      by: { type: 'string', description: '发起者名字（写进广播）' },
+      dryRun: { type: 'boolean', description: '只写广播 + 用 -DryRun 走一遍排程通路（不真注册任务），演练用' },
+    },
+    execute: async (runtime, args) => {
+      const ctx = runtime.ctx
+      const action = String(args?.action ?? 'status')
+      if (action === 'status') {
+        const now = Date.now()
+        const b = readBroadcastSync(ctx, now)
+        const decision = decideRestartDelay({ ctx, selfSessionId: runtime.sessionId, now })
+        const readiness = computeReadiness({ ctx, selfSessionId: runtime.sessionId, now })
+        return envelope(runtime, {
+          ok: true,
+          action,
+          broadcast: b,
+          presence: { tier: decision.tier, delaySec: decision.delaySec, label: decision.label, reasons: decision.reasons },
+          readiness: readiness.active
+            ? {
+                mode: readiness.mode,
+                ready: readiness.ready,
+                waitedSec: readiness.waitedSec,
+                pending: readiness.pending,
+                acked: readiness.acked,
+                promoted: readiness.promoted,
+                text: describeReadiness(readiness),
+              }
+            : null,
+          text: describeBroadcast(pendingBroadcastSync(ctx, now)) || '没有进行中的重启广播',
+          presenceText: describePresence(decision),
+        })
+      }
+      if (action === 'ack') {
+        const now = Date.now()
+        const record = await ackBroadcast(ctx, { sessionId: runtime.sessionId, note: String(args?.reason ?? '') })
+        const readiness = computeReadiness({ ctx, selfSessionId: runtime.sessionId, now })
+        return envelope(runtime, {
+          ok: Boolean(record),
+          action,
+          broadcast: record,
+          readiness: readiness.active
+            ? { mode: readiness.mode, ready: readiness.ready, pending: readiness.pending.length, waitedSec: readiness.waitedSec }
+            : null,
+          text: describeReadiness(readiness),
+          message: record
+            ? `已登记「我收尾了」；${describeReadiness(readiness)}（最晚 ${AUTO_CEILING_SEC} 秒天花板，到点一定断）`
+            : '没有进行中的广播，或它已经不在等待状态（不必 ack）',
+        })
+      }
+      if (action === 'spaces') {
+        const now = Date.now()
+        const spaces = scanSpaces({ now, selfSessionId: runtime.sessionId })
+        const open = readOpenTasksSync(ctx)
+        return envelope(runtime, {
+          ok: true,
+          action,
+          spaces: spaces.slice(0, 20).map((s) => ({
+            sessionId: s.sessionId,
+            idleSec: Math.round(s.ageMs / 1000),
+            openTask: open[s.sessionId]?.displayName || open[s.sessionId]?.taskId || null,
+          })),
+          total: spaces.length,
+          openTasks: Object.keys(open).length,
+        })
+      }
+      if (action === 'cancel') {
+        const record = await cancelBroadcast(ctx, String(args?.reason ?? ''))
+        const task = unscheduleRestartTask()
+        return envelope(runtime, {
+          ok: true,
+          action,
+          broadcast: record,
+          unscheduled: task,
+          message: task.ok ? '广播已撤销，已排的重启任务也删了' : `广播已撤销；但已排的重启任务没删掉（${task.output || '未知原因'}），如果它还在倒计时，重启仍会发生`,
+        })
+      }
+      // arm
+      const explicitDelay = Number(args?.delaySec)
+      const manual = Number.isFinite(explicitDelay) && explicitDelay > 0
+      const decision = manual ? null : decideRestartDelay({ ctx, selfSessionId: runtime.sessionId })
+      const reason = String(args?.reason ?? '（没写原因）')
+      const by = String(args?.by ?? runtime.sessionId ?? 'unknown')
+      // 0.5.6：不填 delaySec = 握手模式。现场没人动就直接提前档；有别人在动就先排天花板，
+      // 等他们 ack（或确认没人在干活）后由 maybePromote 改成提前档（见 lib/handshake.js）。
+      // 0.5.13：删掉「静默 20 秒 = 收手」——沉默不是证据，没证据就等到天花板。
+      const mode = manual ? 'fixed' : 'auto'
+      const delaySec = manual
+        ? Math.max(MIN_DELAY_SEC, explicitDelay)
+        : decision.tier === 'fast'
+          ? Math.max(MIN_DELAY_SEC, AUTO_EARLY_SEC)
+          : AUTO_CEILING_SEC
+      const auto =
+        mode === 'auto'
+          ? { ceilingSec: AUTO_CEILING_SEC, earlySec: AUTO_EARLY_SEC, minReadySec: AUTO_MIN_READY_SEC, activeMs: AUTO_ACTIVE_MS }
+          : null
+      const broadcast = await writeBroadcast(ctx, { by, reason, delaySec, mode, auto })
+      const presenceText = manual ? `手动指定 ${delaySec} 秒` : describePresence(decision)
+      const autoText =
+        mode === 'auto'
+          ? delaySec === AUTO_EARLY_SEC
+            ? `握手模式：现场只有我在动，直接排 ${delaySec} 秒`
+            : `握手模式：先按天花板 ${AUTO_CEILING_SEC} 秒排着；只有拿到硬证据（别的时空全 ack，或没人挂着任务也没人在写）才提前到 ${AUTO_EARLY_SEC} 秒`
+          : '固定延迟模式'
+      if (args?.dryRun) {
+        const probe = scheduleRestart({ delaySec, reason, by, dryRun: true })
+        return envelope(runtime, {
+          ok: true,
+          action,
+          dryRun: true,
+          broadcast,
+          scheduled: probe,
+          delayTier: manual ? 'manual' : decision.tier,
+          delaySec,
+          mode,
+          presenceText,
+          autoText,
+          text: describeBroadcast(pendingBroadcastSync(ctx)),
+          message: '演练：广播已写、排程通路走了一遍（-DryRun 不注册任务）；记得 cancel 掉',
+        })
+      }
+      const scheduled = scheduleRestart({ delaySec, reason, by })
+      if (!scheduled.ok) {
+        // 排程失败就别把假广播挂着吓人：立刻改成 cancelled，并如实说没排上。
+        await cancelBroadcast(ctx, `排程失败：${scheduled.output ?? '未知原因'}`)
+      }
+      return envelope(runtime, {
+        ok: scheduled.ok,
+        action,
+        broadcast: scheduled.ok ? broadcast : await readBroadcastSync(ctx),
+        scheduled,
+        delayTier: manual ? 'manual' : decision.tier,
+        delaySec,
+        mode,
+        autoText,
+        delayReasons: decision?.reasons ?? [],
+        presenceText,
+        text: describeBroadcast(pendingBroadcastSync(ctx)),
+        message: scheduled.ok
+          ? `已广播并排程：${autoText}。现在别再开新任务，把话说完、交接写完；别的时空会看到广播并在收尾后 ack；重启后 GUI 端口会变。`
+          : `排程失败，广播已撤销：${scheduled.output ?? '未知原因'}——先别指望它会重启，查 restart-dsh-later.ps1`,
+      })
+    },
   },
 ]
 
@@ -659,20 +847,34 @@ export function apply(ctx, rawConfig) {
     // 开场每轮都带：按会话 id 只带一次会赌宿主时序（新会话的系统提示
     // 常常在 session/created 之前就拼好了），赌输一次新时空就白跑。
     const rootLine = `交接根目录：${runtime.ctx?.root ?? '（未配置）'}（下面所有 handoff/... 都相对它；换盘/换电脑以这里为准，别猜）`
+    const broadcastLine = (() => {
+      try {
+        const text = describeBroadcast(pendingBroadcastSync(runtime.ctx))
+        return text ? [text, ''] : []
+      } catch {
+        return []
+      }
+    })()
     const lines = [
       '【书同文车同轨】本会话已启用统一收纳与交接规则。',
       '',
       '开场（每轮都带；先做完这几步，再回用户第一句）：',
       '不是等用户提起才生效——不管用户第一句话说什么，本插件和这套交接规则都在这。',
       rootLine,
-      '⓪ 先看 handoff/README.md 顶部的「⚠ 挂账」段和 handoff/项目总览.md 的挂账列——有坑先认领，别等踩到才发现；',
-      '① 再读 handoff/README.md（总目录按权重排：⚠挂账 → 一·文件 二·插件 三·工具 四·A盘 五·在办 六·清单）；接活前再读 handoff/项目总览.md（几个项目、各自到哪一步、最近加了什么）；细则在 handoff/索引/ 下四页（文件/插件/工具/A盘目录），按需再点；',
-      '② 交接按**项目**找，不要一份份翻：看 handoff/README.md「五 · 在办」——每个项目下面有一行「当前交接：<文件>」。用用户的话或任务名对出自己接哪个项目，**只读那一份**（先 machine 版；头两行就写着「项目」「交给」，对不上就不是给你的）；对不出来就直接问用户「我是来接哪个项目的？」，别猜。要查更旧的再看 handoff/索引/交接索引.md（顶部「按项目看」一节）；其它交接知道存在就行，不要逐个打开；',
-      '③ 白板在 handoff/projects/，只读「当前一棒」相关的项目；做完了再从总目录看还要不要接别的；',
-      '④ 路径不确定就 locate / inspect_handoff，别猜；只在上面那个根目录里找，别在别处翻旧交接（比如工作区根上的旧 HANDOFF.md）；',
-      '⑤ 要写教训就写 handoff/教训日记/<日期>-<主题>.md；要更新这台电脑的状态就改 handoff/任务交接本/当前状态.md；',
-      '⑥ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
-      '⑦ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；QQ 聊天时空写 self/diary/ 日记，不写日档。',
+      ...broadcastLine,
+      '**三块板块的权重（读序不许倒）：① 规矩 100 ＞ ② 现在 90 ＞ ③ 目录 80。**',
+      '第一件事只有一件：读 ①。没读它之前不要打开 ②③，也不要先去翻 README、项目总览或白板——顺序一倒，后面全乱（0.5.3 起写死，实测踩过）。',
+      `① 读 **${NORMS_FILE}**（第一层：定死的规矩——重启/交接/文件存放/隐私/账本/插件接口，只挑跟你这次相关的几条）；`,
+      `② 读 **${DYNAMIC_FILE}**（第二层：现在谁在干什么、哪件事先修、哪些请求没人接、有没有全时空重启；顶部就是「⚠ 挂账」段，有坑先认领）；`,
+      '③ 读 handoff/README.md（第三层：总目录——⚠挂账 → 一·在办（认领活）→ 二·清单 → 三·文件 → 四·插件 → 五·工具 → 六·A盘 → 七·已归档）；接活前再读 handoff/项目总览.md（几个项目、各自到哪一步、最近加了什么）；细则在 handoff/索引/ 下六页（文件/插件/工具/A盘/交接/教训），按需再点；',
+      '注：① ② ③、`handoff/项目总览.md`、两个索引**都是生成物**——要改就改源头（手册文件 / 白板 / 交接 / 账本），插件会在下次启动或归档后重排；手改生成物必被覆盖（0.5.4 起写死）。',
+      '注：开场为了看清局面先截图、看屏幕，不算「翻别的地方」；但别顺手去读别的文件、别翻旧交接。',
+      '④ 交接按**项目**找，不要一份份翻：看 ② 或 ③ 的「一 · 在办」——每个项目下面有一行「当前交接：<文件>」。用用户的话或任务名对出自己接哪个项目，**只读那一份**（先 machine 版；头两行就写着「项目」「交给」，对不上就不是给你的）；项目没挂当前交接，就直接读 `handoff/projects/<id>.md` 的「当前一棒」；对不出来就问用户「我是来接哪个项目的？」，别猜。更旧的看 handoff/索引/交接索引.md（顶部「按项目看」）；其它交接知道存在就行，不要逐个打开；',
+      '⑤ 白板在 handoff/projects/，只读「当前一棒」相关的项目；做完了再从总目录看还要不要接别的；',
+      '⑥ 路径不确定就 locate / inspect_handoff，别猜；只在上面那个根目录里找，别在别处翻旧交接（比如工作区根上的旧 HANDOFF.md）；',
+      '⑦ 要写教训就写 handoff/教训日记/<日期>-<主题>.md；要更新这台电脑的状态就改 handoff/任务交接本/当前状态.md；',
+      '⑧ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
+      '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；QQ 聊天时空写 self/diary/ 日记，不写日档。',
       '',
     ]
     lines.push(
@@ -773,9 +975,28 @@ export function apply(ctx, rawConfig) {
     if (runtime.fatal) return [`- 启动失败：${runtime.startup?.notes?.join('；') ?? '未知原因'}`]
     const out = []
     if (runtime.ctx?.root) out.push(`- 交接根目录：${runtime.ctx.root}`)
+    // 0.5.0 三层：规矩 → 现在 → 目录。顺序写进现状，省得新时空只读目录就开工。
+    if (runtime.ctx?.root) {
+      const normsCount = normsCountSync(runtime.ctx)
+      out.push(`- 三层信息：① 规矩 \`${NORMS_FILE}\`（${normsCount} 条：重启/交接/存放/隐私…） → ② 现在 \`${DYNAMIC_FILE}\`（谁在干什么、先修什么） → ③ 目录 \`handoff/README.md\``)
+    }
+    try {
+      const text = describeBroadcast(pendingBroadcastSync(runtime.ctx))
+      if (text) out.push(`- ${text}`)
+    } catch {
+      // 广播坏了不该拖垮开场
+    }
     // 新时空常见的两个「不敢」：不知道自己能重启、不知道重启入口只有一个。
-    // 直接写进现状，省得每个时空自己翻手册（0.4.4）。
-    out.push('- 你自己会的事：按 `handoff/规范/重启.md` 可以发起一次延时重启——先回一句「马上重启」，再执行本机约定的延时重启脚本（不同机器不一样，别直接杀进程、也别用 Start-Process/WMI 起延时脚本）；重启后 GUI 端口会变')
+    // 直接写进现状，省得每个时空自己翻手册（0.4.4）。0.5.0 起重启要先广播。
+    // 0.5.5 起等多久不再拍死 45 秒：先看现场（会话库 mtime + open-tasks），自动分 25/45/75。
+    let presenceLine = ''
+    try {
+      const decision = decideRestartDelay({ ctx: runtime.ctx, selfSessionId: runtime.sessionId })
+      presenceLine = `；不填 delaySec 就走**握手模式**（先按天花板 ${AUTO_CEILING_SEC} 秒排着，只有拿到硬证据——别的时空全 ack，或没人挂着任务也没人在写——才自动提前到 ${AUTO_EARLY_SEC} 秒；沉默不算证据。现在这一档按现场算是 ${decision.label}，${decision.delaySec} 秒：${decision.reasons[0] ?? ''}）`
+    } catch {
+      // 感知失败就退回默认档，别挡住开场
+    }
+    out.push(`- 你自己会的事：要重启 DSH 就用 \`restart_dsh\`（action=arm）——它先把「全时空重启」写进广播，别的时空每轮开场都能看到并收尾，再调 \`C:\\safety-kit\\bin\\restart-dsh-later.ps1\` 排程；先回一句「马上重启」再 arm${presenceLine}。看到广播的时空：收完自己那一轮就调 \`restart_dsh(action="ack")\` 报「我收尾了」，别让发起方干等。不要直接跑 restart-dsh.ps1，也不要用 Start-Process/WMI 起延时脚本；规则见 \`C:\\tongwen\\handoff\\手册\\重启.md\`（重启后 GUI 端口会变）`)
     const presence = runtime.startup?.presence
     if (presence) {
       out.push(`- 九档：${presence.present?.length ?? 0} 档在位${presence.missing?.length ? `，缺失 ${presence.missing.join('、')}` : ''}${presence.notWritable?.length ? `，不可写 ${presence.notWritable.join('、')}` : ''}`)
@@ -877,6 +1098,51 @@ export function apply(ctx, rawConfig) {
     }
   } catch (error) {
     recordApplyError('timer.interval', error)
+  }
+
+  // ---- 握手式自动重启（0.5.6，0.5.13 只认硬证据）----
+  // 广播是文件，本插件是唯一知道「就绪了没」的那一方：每 3 秒算一次，
+  // 只有别的时空全 ack、或没人挂着任务也没人在写，才把天花板任务换成 25 秒提前档；
+  // 沉默不是证据——06:47 就是拿「静默 20 秒」当收手，把正在干活的安全插件杀了。
+  // 只在广播 pending 时才真的动手，平时一次读盘几十微秒。
+  try {
+    const timerService = typeof ctx.get === 'function' ? ctx.get('timer') : ctx.timer
+    if (timerService?.interval) {
+      let promoting = false
+      disposers.push(
+        timerService.interval(
+          async () => {
+            const runtime = state.runtime
+            if (!runtime || runtime.fatal) return
+            if (promoting) return
+            try {
+              const readiness = computeReadiness({
+                ctx: runtime.ctx,
+                selfSessionId: runtime.sessionId,
+              })
+              if (!readiness.active || !readiness.ready) return
+              promoting = true
+              const result = await maybePromote({
+                ctx: runtime.ctx,
+                selfSessionId: runtime.sessionId,
+              })
+              if (result?.promoted) {
+                runtime.logger?.info?.(
+                  `[restart-handshake] ${result.reason}（广播 ${result.broadcast?.id ?? '?'}）`,
+                )
+              }
+            } catch (error) {
+              recordApplyError('timer.restartHandshake', error)
+            } finally {
+              promoting = false
+            }
+          },
+          Math.max(1000, AUTO_TICK_MS),
+        ),
+      )
+    }
+  } catch (error) {
+    recordApplyError('timer.restartHandshake', error)
   }
 
   return () => {
