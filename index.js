@@ -429,7 +429,7 @@ const TOOL_SPECS = [
   {
     name: 'focus_context',
     description:
-      '相关性定位（0.5.24）：给一句「这次要做什么」，只返回这次该读的手册页（带相关小节行号）和该看的信箱请求；不相关的请求只报数量、不推送。九档都认：上传→隐私清洗手册，做插件→《插件的自我管理》，重启→重启手册，写日档/人格→self 档，做同类事→自动预读以前的教训日记（指出可能踩到的那几行）。开工前先调它，别把手册和通知一股脑全读。',
+      '相关性定位（0.5.25）：给一句「这次要做什么」，只返回这次该读的手册页（带相关小节行号）和该看的信箱请求；不相关的请求只报数量、不推送。九档都认：上传→隐私清洗手册，做插件→《插件的自我管理》，重启→重启手册，写日档/人格→self 档，做同类事→自动预读以前的教训日记（指出可能踩到的那几行）。开工前先调它，别把手册和通知一股脑全读。',
     parameters: {
       task: { type: 'string', description: '这次要做什么，一句话（越具体越准）', required: true },
       project: { type: 'string', description: '当前项目 id（可选；对上项目的请求加分）' },
@@ -456,7 +456,7 @@ const TOOL_SPECS = [
   {
     name: 'organ_call',
     description:
-      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过安全插件的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。',
+      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过安全插件的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。0.5.25 起双向调用带防回环：chain 最多 3 跳、同一能力不许出现两次；replyTo 按事件 id 去重（同一件事只回一次），每次调用都会在我们的 events.jsonl 留一行 organ.call，回执再留 organ.call.reply。',
     parameters: {
       ability: { type: 'string', description: '能力名，例如 chat.send', required: true },
       dryRun: { type: 'boolean', description: '只探路：返回文件是否存在/多大、会走哪道门，不返回内容也不动手' },
@@ -467,6 +467,17 @@ const TOOL_SPECS = [
           '参数：跑命令时给数组（接在名片 entry.args 后面，如 ["--n","6"]）；派单给工具时给对象（键值对，会原样抄进回执）。给 JSON 字符串也认。',
       },
       timeoutMs: { type: 'integer', description: '这次最多等多久（毫秒，1000–120000，缺省文件不超时、命令 30 秒、请求 10 秒）' },
+      chain: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          '调用链（防回环，0.5.25）：把「我这次是被谁叫起来的」按顺序放进来（能力名）。最多 3 跳；同一能力在链里出现两次就是回环，直接 E_CALL_LOOP 不出去。',
+      },
+      replyTo: {
+        type: 'string',
+        description:
+          '回执对象（0.5.25）：这次调用是在回应哪条事件（事件 id）。同一事件只回一次，重复会得到 E_LOOP_DEDUPE；回执会往我们自己的 events.jsonl 写一行 organ.call.reply。',
+      },
     },
     execute: organCall,
   },
@@ -889,7 +900,7 @@ export function apply(ctx, rawConfig) {
       '⑧ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
       '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；聊天类时空写 self/diary/ 日记，不写日档。',
       '',
-      `**开工前先定位（0.5.24，别一股脑全读）**：做正事之前调一次 \`focus_context{task:"这次要做什么"}\`——它按相关性只给你该读的手册页（带小节行号）和该看的请求；九档都认，做同类事时还会自动预读以前的教训日记。没列出来的先放着。主题索引：${topicIndexLine()}。`,
+      `**开工前先定位（0.5.25，别一股脑全读）**：做正事之前调一次 \`focus_context{task:"这次要做什么"}\`——它按相关性只给你该读的手册页（带小节行号）和该看的请求；九档都认，做同类事时还会自动预读以前的教训日记。没列出来的先放着。主题索引：${topicIndexLine()}。`,
       '',
     ]
     lines.push(

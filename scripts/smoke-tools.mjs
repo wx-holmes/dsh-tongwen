@@ -898,6 +898,26 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(dryDanger.needsGate, true)
     assert.equal(dryDanger.sideEffect, 'danger')
 
+    // 0.5.25：双向调用防回环——链里已经有它、或跳数到顶，都直接挡
+    const looped = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.read', chain: ['echo.read'] })
+    assert.equal(looped.ok, false)
+    assert.equal(looped.errorCode, 'E_CALL_LOOP')
+    assert.match(looped.message, /回环/)
+    const tooDeep = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.read', chain: ['a.b', 'c.d', 'e.f'] })
+    assert.equal(tooDeep.errorCode, 'E_CALL_LOOP')
+    assert.match(tooDeep.message, /3 跳/)
+    // 回执：同一件事只回一次；两次调用都在自己的 events.jsonl 留脚印
+    const replied = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.read', replyTo: 'evt-smoke-reply-1' })
+    assert.equal(replied.ok, true)
+    const dupReply = await organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.read', replyTo: 'evt-smoke-reply-1' })
+    assert.equal(dupReply.ok, false)
+    assert.equal(dupReply.errorCode, 'E_LOOP_DEDUPE')
+    const ownEvents = (await fsp.readFile(path.join(root, 'logs', 'organ-events.jsonl'), 'utf8'))
+      .trim().split('\n').map((l) => JSON.parse(l))
+    assert.equal(ownEvents.some((e) => e.type === 'organ.call'), true)
+    assert.equal(ownEvents.some((e) => e.type === 'organ.call.reply' && e.subject === 'evt-smoke-reply-1'), true)
+    assert.equal(new Set(ownEvents.map((e) => e.id)).size, ownEvents.length)
+
     const ingested = await organsLib.ingestOrganEvents({ root }, cfg)
     assert.equal(ingested, 1)
     const ledger = await fsp.readFile(path.join(root, 'logs', '账本', 'data', 'records.jsonl'), 'utf8')

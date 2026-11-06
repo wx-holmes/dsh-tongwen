@@ -1,4 +1,24 @@
 # 变更日志
+## 0.5.25（2026-11-06，器官间双向调用：链上防回环、回执按事件 id 去重、我们自己的脚印写进 events）
+
+### 背景
+你 23:04：「两个都上，另外把之前的尾巴处理一下，比如旧路径旧文书之类的」——把「双向各调一次」从验收话变成能跑的东西：别的器官能调我们的只读能力，我们调它们时也要留脚印；同时不许 A→B→A 打转。
+
+### 变更
+- `organ_call` 新增两个参数：`chain`（调用链，能力名数组）与 `replyTo`（回执对象，事件 id）。
+- 防回环三条硬约束（`lib/organs.js`）：链最多 `MAX_CALL_HOPS = 3` 跳；同一能力在同一条链里出现两次直接 `E_CALL_LOOP`；`replyTo` 按事件 id 去重，同一件事第二次回 `E_LOOP_DEDUPE`（只留最近 200 条回执记录）。
+- 每次调用成功后往我们自己的 `logs/organ-events.jsonl` 追一行 `organ.call`（organ / ability / sideEffect / who / chain）；带 `replyTo` 的再追一行 `organ.call.reply`。事件 id 形如 `evt-tongwen-<毫秒base36>-<6 位序号>`，同文件内不重复；留痕失败不阻断调用。
+- `KNOWN_EVENT_TYPES` 加 `organ.call.reply`；`organ_call` 工具描述与参数说明同步（含 dryRun 不发事件）。
+- 冒烟扩写：链里已有自己 → `E_CALL_LOOP`（message 含「回环」）、3 跳以上 → `E_CALL_LOOP`（含「3 跳」）、同一 `replyTo` 第二次 → `E_LOOP_DEDUPE`；自家 events 里两个事件都在且 id 全不重复。
+
+### 口径
+- 「双向」= 我们能调别人的只读能力、别人也能调我们的（名片 `organ.json` 本来就登记了 4 项只读 + 1 项写），两条方向都靠同一道 `organ_call` 门。
+- 防的是「无终止回环」，不是正常来回：一次问答（A 调 B、B 回一条事件、A 据此再调一次）允许；第三跳以后停手。
+- 回执去重认事件 id，不认内容：对方重放同一件事不会让我们把同一回两遍。
+
+### 测试
+四套 **107 全过**：core 37 / tools 42（新增 4 条回环/回执断言）/ session 13 / cross-session 15。
+
 ## 0.5.24（2026-11-06，相关性覆盖九档：self 推自己、教训日记按相关度自动预读）
 
 ### 背景
