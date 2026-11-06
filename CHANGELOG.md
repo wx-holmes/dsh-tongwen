@@ -1,4 +1,46 @@
 # 变更日志
+## 0.5.24（2026-11-06，相关性覆盖九档：self 推自己、教训日记按相关度自动预读）
+
+### 背景
+你 22:53：「九档都可以加上相关性，self是你自己的所有东西，所以关于你自己的记忆人格之类的都可以推，然后就是教训日记的相关性，可以排一下，比如一个时空正在做教训日记相关的事情就可以把之前的教训日记推给她，这样她就不会犯同一次错误率。」
+
+### 变更
+- 主题表从 7 个扩到 15 个 + 兜底 = 16 类，九档全认：新增 `self`（吸收原 `memory`：人格 / 记忆 / 日档）、`lessons`、`logs`、`created`、`incoming`、`downloads`、`config`、`scratch`、`archive`；priority 唯一：handoff 94 / plugin 90 / publish 87 / lessons 85 / self 80 / files 74 / restart 68 / logs 62 / ledger 56 / created 48 / incoming 44 / downloads 40 / config 36 / scratch 30 / archive 26 / general 0。
+- 新增动态文档 `DYNAMIC_DIRS`：`lessons` 按任务 bigram 匹配 `handoff/教训日记` 下的文件名（×2）与正文，≥4 分才收、最多 3 篇；`self` 取 `self/日档` 最近 2 篇（按文件名倒序）。
+- 任务没提「教训」也会跑一遍教训匹配（auto 预读），命中就作为 `lessons(auto)` 主题追加；read 里带 `matched`（原文行号 + 文本，截 160 字）。
+- `TOPIC_SCHEMA_VERSION` 升到 2；`validateTopics()` 扩成能校验动态目录（目录必须在九档内、max 1-5、mode latest/match、主题必须存在）；`topicTable()` 每行带 `dynamic`。
+- 手册页 `handoff/手册/相关性路由.md` 整页重写：16 类目录表、动态预读规则、加主题/加动态目录的步骤。
+- 冒烟把 0.5.23 用例扩写：16 行与顺序、九档全覆盖、dynamic 标志、自动预读真跑（临时 root 造一篇假教训并断言 `matched`）、self 推日档、dup 表被拦。
+
+### 口径
+- 推的是「可能踩到的那几行」，不是整篇教训；没命中就不推，宁缺勿滥。
+- `self` 只读自己档（日档 / README / 记忆卡来源），不把人格卡正文塞进上下文——遵守 `self/README.md` 的约定（插件只扫描不解析）。
+- 动态来源只限九档内；加新来源走 `DYNAMIC_DIRS`，不散落在代码里。
+
+### 测试
+四套 **107 全过**：core 37 / tools 42（相关性用例扩写）/ session 13 / cross-session 15。
+
+## 0.5.23（2026-11-06，相关性维护：清点 8 大类、按优先级排序、给升级留位）
+
+### 背景
+你 22:46：「正好你这边做一下相关性的维护，看一下目前有几大类，然后按相关性排序一下，也要给后续升级留空间。」——0.5.20 只做了「按任务挑页」，主题是平铺的：谁先定义谁排前面，加主题只能往后追，也说不出「为什么这页比那页更该先看」。
+
+### 变更
+- `lib/relevance.js` 每个主题加 `tier`（core / frequent / occasional）+ 唯一 `priority` + `why`（为什么排这儿）；排序口径 = 出现频率 × 出错代价。
+- 优先级定稿（高→低）：`handoff` 90（core，每件事都以交接收口）→ `plugin` 85（core，当前主线）→ `publish` 80（core，对外不可逆）→ `files` 70 → `memory` 65 → `restart` 60 → `ledger` 50；兜底 `general` 0。
+- `detectTopics()` 同分时按 priority 再按 id 排；`topicIndexLine()` 也按 priority 降序，开场注里的索引顺序跟着变。
+- 新增 `TOPIC_SCHEMA_VERSION = 1`、`TIER_LABEL`、`topicTable()`（8 行总表，带档位与 why）、`validateTopics()`（查 id/priority 重复、priority 越界、tier 不认识、缺关键词、docs 缺 path/why；路径越界只 warning）、`topicById()`。
+- 冒烟加一条：表长 8、顺序与 priority 严格递减、`validateTopics().ok`、能报出重复 id / 重复 priority。
+- 手册新增 `handoff/手册/相关性路由.md` 整页（8 大类目录表、排序规则、三条边界、加主题五步、升级空间）。
+
+### 口径
+- 相关性是**过滤器**不是删除器：主题没命中就给兜底总览，不推无关请求。
+- `priority` 必须唯一——两件事一样重要就该合并成一个主题；这是「留升级空间」的硬约束。
+- 加主题先跑 `validateTopics()`，红了不许合。
+
+### 测试
+四套 **107 全过**：core 37 / tools 42（新增相关性主题表用例）/ session 13 / cross-session 15。
+
 ## 0.5.22（2026-11-06，重启提速：提前档前先杀掉旧定时器，不再被自己补刀）
 
 ### 背景

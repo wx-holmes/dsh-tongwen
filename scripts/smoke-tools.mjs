@@ -1337,6 +1337,85 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(missing.errorCode, 'E_VALIDATION_BLOCKING')
   })
 
+  await check('0.5.24 相关性主题表：九档全覆盖（16 大类）、教训与日档动态预读、优先级唯一', async () => {
+    const relevance = await import('../lib/relevance.js')
+
+    // ① 表本身没写坏：id/priority 不重复、tier 认识、每类至少一页文档或一条动态目录
+    const v = relevance.validateTopics()
+    assert.equal(v.ok, true, `主题表自检没过：${v.errors.join('；')}`)
+    assert.equal(v.schemaVersion, 2, '表结构版本要带出来，方便老时空看出「表变过」')
+
+    // ② 清点：15 个主题 + 兜底 = 16 大类，按 priority 从高到低
+    const table = relevance.topicTable()
+    assert.equal(table.length, 16, '15 个主题 + 兜底 = 16 大类')
+    assert.deepEqual(
+      table.map((t) => t.id),
+      [
+        'handoff', 'plugin', 'publish', 'lessons', 'self', 'files', 'restart', 'logs',
+        'ledger', 'created', 'incoming', 'downloads', 'config', 'scratch', 'archive', 'general',
+      ],
+    )
+    const priorities = table.map((t) => t.priority)
+    assert.deepEqual(priorities, [...priorities].sort((a, b) => b - a), '目录表要按 priority 从高到低')
+    assert.equal(new Set(priorities).size, priorities.length, 'priority 不重复，同分排不出先后')
+    for (const row of table) {
+      assert.ok(row.tierLabel, `${row.id} 要有分档说明`)
+      assert.ok(row.docs >= 1, `${row.id} 至少一页文档`)
+    }
+
+    // ③ 九档全覆盖：九个档名都能在主题表里认出来
+    for (const id of ['handoff', 'created', 'downloads', 'incoming', 'scratch', 'archive', 'logs', 'config', 'self']) {
+      assert.ok(table.some((t) => t.id === id), `九档缺 ${id}`)
+    }
+
+    // ④ 动态文档：教训按任务挑、日档按日期挑，都不是死名单
+    assert.equal(table.find((t) => t.id === 'lessons').dynamic, true, '教训日记要按任务动态挑')
+    assert.equal(table.find((t) => t.id === 'self').dynamic, true, '日档要按日期动态挑')
+
+    // ⑤ 同分时按 priority 定先后：交接（94）比文件存放（74）靠前
+    const tie = relevance.detectTopics('交接 文件')
+    assert.equal(tie.length, 2, '两个词都该命中')
+    assert.equal(tie[0].id, 'handoff', '同分时 priority 高的排前面')
+
+    // ⑥ 认不出来就是空数组（由 routeFocus 退兜底），不硬猜
+    assert.deepEqual(relevance.detectTopics('今天天气'), [])
+
+    // ⑦ 教训预读：任务没提「教训」，也要把同类的坑推出来，并指出原文行
+    await fsp.mkdir(path.join(root, 'handoff', '教训日记'), { recursive: true })
+    const lessonPath = path.join(root, 'handoff', '教训日记', '2026-11-01-插件工具定义事故.md')
+    await fsp.writeFile(
+      lessonPath,
+      '# 2026-11-01 插件工具定义事故\n\n## 发生了什么\n改插件工具定义后 DSH 起不来，面板空着。\n\n## 根因\n工具 schema 少写必填字段。\n\n## 下次怎么做\n改完先 node --check，再单独加载一次，看返回里的 note。\n',
+      'utf8',
+    )
+    const auto = await call('focus_context', { task: '给插件补一个工具定义' })
+    assert.equal(auto.ok, true, auto.message)
+    assert.ok(auto.topics.some((t) => t.id === 'lessons' && t.auto === true), '没提教训也要自动推同类的坑')
+    const lessonDoc = auto.read.find((d) => String(d.path).includes('插件工具定义事故'))
+    assert.ok(lessonDoc, '要推到那篇同类的教训')
+    assert.ok(Array.isArray(lessonDoc.matched) && lessonDoc.matched.length > 0, '要指出可能踩到的原文行')
+
+    // ⑧ self：关于我自己的事，要推到 self 档与最近日档
+    await fsp.mkdir(path.join(root, 'self', '日档'), { recursive: true })
+    await fsp.writeFile(path.join(root, 'self', 'README.md'), '# self\n', 'utf8')
+    await fsp.writeFile(path.join(root, 'self', '日档', '2026-11-06-冒烟时空.md'), '# 2026-11-06 冒烟时空\n\n## 触点\n…\n', 'utf8')
+    const me = await call('focus_context', { task: '写今天的日档，再补一下人格记忆' })
+    assert.equal(me.ok, true, me.message)
+    assert.ok(me.topics.some((t) => t.id === 'self'), '关于我自己的事要命中 self')
+    const selfDocs = me.read.map((d) => d.path)
+    assert.ok(selfDocs.includes('self/README.md'), '要推 self 总说明')
+    assert.ok(selfDocs.some((p) => String(p).includes('self/日档/')), '要推最近的日档')
+
+    // ⑨ 自检真的会拦：id 与 priority 重复都要报
+    const broken = relevance.validateTopics([
+      { id: 'dup', label: 'A', tier: 'core', priority: 10, keywords: ['a'], docs: [{ path: 'handoff/a.md', why: 'a' }] },
+      { id: 'dup', label: 'B', tier: 'core', priority: 10, keywords: ['b'], docs: [{ path: 'handoff/b.md', why: 'b' }] },
+    ])
+    assert.equal(broken.ok, false, '写坏的表必须被拦住')
+    assert.ok(broken.errors.some((e) => e.includes('id 重复')), '要报 id 重复')
+    assert.ok(broken.errors.some((e) => e.includes('priority 重复')), '要报 priority 重复')
+  })
+
   const failed = checks.filter((item) => !item.ok)
   for (const item of checks) {
     console.log(`${item.ok ? '✓' : '✗'} ${item.name}${item.ok ? '' : ` — ${item.error}`}`)
