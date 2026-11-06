@@ -9,7 +9,7 @@
  * （logs/organs-exec.jsonl 里该器官最近一条）。名片上写着 ≠ 活着，得量。
  *
  * 退出码：0 = 全部至少接了头+脚；1 = 有器官缺头或缺脚（硬要求）。
- * 依据：handoff/手册/插件接口与合体契约.md
+ * 依据：handoff/手册/插件的自我管理.md
  */
 import { scanOrgans, connectPointsOf, probeHeart, lastExecOf } from '../lib/organs.js';
 

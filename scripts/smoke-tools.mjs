@@ -992,8 +992,8 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
       'utf8',
     )
     await fsp.writeFile(
-      path.join(root, 'handoff', '手册', '插件接口与合体契约.md'),
-      '# 插件接口与合体契约\n\n> 一句话：冒烟用的假契约\n\n正文一段。\n',
+      path.join(root, 'handoff', '手册', '插件的自我管理.md'),
+      '# 插件的自我管理\n\n> 一句话：冒烟用的假契约\n\n正文一段。\n',
       'utf8',
     )
     const norms = await layers.renderNormsPage(pageCtx)
@@ -1004,7 +1004,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.ok(norms.indexOf('先读哪一块') < norms.indexOf('接入契约'), '「先读哪一块」必须排在接入契约之前')
     // 0.5.1：接入契约钉在规矩清单最上面（做插件的时空第一眼就看到）
     assert.match(norms, /接入契约（所有做插件的时空必读/, '手册总览顶部没有接入契约块')
-    assert.ok(norms.indexOf('插件接口与合体契约') < norms.indexOf('示例规矩'), '插件契约没钉在最前')
+    assert.ok(norms.indexOf('插件的自我管理') < norms.indexOf('示例规矩'), '插件契约没钉在最前')
     // 前面建的项目多半已经 done 归档；这里另起一个在办的，确认动态白板真带上「当前一棒」
     const layered = await call('project_upsert', {
       id: 'smoke-layers',
@@ -1302,21 +1302,21 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.ok(known.includes('cli-echo.read'), '已知能力里要有这个器官的那条')
   })
 
-  await check('0.5.20 相关性路由：按任务只给该读的页，不一股脑推（上传→隐私手册 / 插件→联动契约 / 无关→兜底）', async () => {
+  await check('0.5.20 相关性路由：按任务只给该读的页，不一股脑推（上传→隐私手册 / 插件→插件的自我管理 / 无关→兜底）', async () => {
     // ① 上传/发布：只该指向隐私清洗与交接规范
     const publish = await call('focus_context', { task: '把书同文推到公开仓库，先把隐私清干净' })
     assert.equal(publish.ok, true, publish.message)
     assert.deepEqual(publish.topics.map((t) => t.id), ['publish'], '上传任务只该命中 publish')
     const publishDocs = publish.read.map((d) => d.path)
     assert.ok(publishDocs.some((p) => p.includes('上传仓库前的隐私清洗')), '上传要先读隐私手册')
-    assert.ok(!publishDocs.some((p) => p.includes('联动契约')), '上传任务不该推联动契约')
+    assert.ok(!publishDocs.some((p) => p.includes('插件的自我管理')), '上传任务不该推插件手册')
 
-    // ② 做插件：指向契约与联动
+    // ② 做插件：只指向合并后的《插件的自我管理》（0.5.21 起三页合一）
     const plugin = await call('focus_context', { task: '给插件加一个工具，走名片和联动契约' })
     assert.equal(plugin.ok, true, plugin.message)
     assert.deepEqual(plugin.topics.map((t) => t.id), ['plugin'])
     const pluginDocs = plugin.read.map((d) => d.path)
-    assert.ok(pluginDocs.some((p) => p.includes('联动契约')), '做插件要先读联动契约')
+    assert.ok(pluginDocs.some((p) => p.includes('插件的自我管理')), '做插件要先读插件的自我管理')
     assert.ok(!pluginDocs.some((p) => p.includes('隐私清洗')), '做插件不该推隐私手册')
 
     // ③ 不相干的任务：退回手册总览，不硬猜

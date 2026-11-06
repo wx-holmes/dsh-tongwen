@@ -1,11 +1,11 @@
 {
   "id": "tongwen",
   "name": "书同文",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "kind": "inner",
   "status": "online",
   "owner": "书同文时空",
-  "updatedAt": "2026-11-06T22:20:00+08:00",
+  "updatedAt": "2026-11-06T22:30:00+08:00",
   "events": {
     "path": "./tongwen\\logs\\organ-events.jsonl"
   },
