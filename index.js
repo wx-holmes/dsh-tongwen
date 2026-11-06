@@ -22,6 +22,7 @@ import { BUCKET_LIST } from './lib/buckets.js'
 import { listProjects } from './lib/projects.js'
 import { readInbox, mergeInbox } from './lib/inbox.js'
 import { normsCountSync, NORMS_FILE, DYNAMIC_FILE } from './lib/layers.js'
+import { topicIndexLine } from './lib/relevance.js'
 import {
   pendingBroadcastSync,
   describeBroadcast,
@@ -63,6 +64,7 @@ import {
   inboxSend,
   inboxList,
   inboxClose,
+  focusContext,
   organList,
   organCall,
 } from './lib/tools.js'
@@ -423,6 +425,17 @@ const TOOL_SPECS = [
       limit: { type: 'integer', description: '最多返回几条' },
     },
     execute: inboxList,
+  },
+  {
+    name: 'focus_context',
+    description:
+      '相关性定位（0.5.20）：给一句「这次要做什么」，只返回这次该读的手册页（带相关小节行号）和该看的信箱请求；不相关的请求只报数量、不推送。比如上传→隐私清洗手册，做插件→联动契约与契约页，重启→重启手册。开工前先调它，别把手册和通知一股脑全读。',
+    parameters: {
+      task: { type: 'string', description: '这次要做什么，一句话（越具体越准）', required: true },
+      project: { type: 'string', description: '当前项目 id（可选；对上项目的请求加分）' },
+      limit: { type: 'integer', description: '最多返回几条相关请求，默认 5' },
+    },
+    execute: focusContext,
   },
   {
     name: 'inbox_close',
@@ -876,6 +889,8 @@ export function apply(ctx, rawConfig) {
       '⑧ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
       '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；聊天类时空写 self/diary/ 日记，不写日档。',
       '',
+      `**开工前先定位（0.5.20，别一股脑全读）**：做正事之前调一次 \`focus_context{task:"这次要做什么"}\`——它按相关性只给你该读的手册页（带小节行号）和该看的请求；没列出来的先放着。主题索引：${topicIndexLine()}。`,
+      '',
     ]
     lines.push(
       '硬规则：',
@@ -889,7 +904,7 @@ export function apply(ctx, rawConfig) {
       ...summarizeStartup(runtime),
       ...summarizePeers(),
       '',
-      '可用工具：locate / inspect_handoff / list_handoffs / update_handoff / begin_task / end_task / heartbeat / restore / archive_handoff / rollback_data / housekeeping_report / project_upsert / project_read / project_list / inbox_send / inbox_list / inbox_close',
+      '可用工具：locate / inspect_handoff / list_handoffs / update_handoff / begin_task / end_task / heartbeat / restore / archive_handoff / rollback_data / housekeeping_report / project_upsert / project_read / project_list / inbox_send / inbox_list / inbox_close / focus_context',
     )
     return lines.join('\n')
   }

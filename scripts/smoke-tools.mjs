@@ -65,38 +65,44 @@ function createFakeCtx() {
 async function main() {
   // 冒烟里 cancel 广播时不许真去删机器上已排的重启任务。
   process.env.TONGWEN_NO_SCHTASKS = '1'
-  // 本仓库不带外部校验器：给一个桩，只验我们这一侧（采集 → 送裁决 → 落盘）。
-  const fakeVerify = path.join(os.tmpdir(), 'tongwen-fake-verify.mjs')
-  await fsp.writeFile(
-    fakeVerify,
-    [
-      "let raw = ''",
-      "process.stdin.on('data', (chunk) => { raw += chunk })",
-      "process.stdin.on('end', () => {",
-      '  const payload = JSON.parse(raw || "{}")',
-      '  const claims = Array.isArray(payload.claims) ? payload.claims : []',
-      '  const out = {',
-      "    verdict: 'allow',",
-      "    by: payload.by || 'fake-verify',",
-      '    total: claims.length,',
-      '    round: 1,',
-      "    summary: '桩：全部当通过',",
-      '    results: claims.map((c) => ({ claim: c.claim, ok: true, actual: "stub", ms: 0 })),',
-      '  }',
-      '  process.stdout.write(JSON.stringify(out))',
-      '})',
-    ].join('\n'),
-    'utf8',
-  )
-  process.env.TONGWEN_VERIFY_SCRIPT = fakeVerify
+
+  // 冒烟不该依赖本机外部校验器：机器上有真的 verify.mjs 就用真的；
+  // 没有（比如公开仓库那份副本）就现写一个桩，只验我们这侧「采集 → 送裁决 → 落盘」。
+  {
+    const realVerify = process.env.TONGWEN_VERIFY_SCRIPT || 'safety-kit 的 bin/verify.mjs'
+    const exists = await fsp.stat(realVerify).then(() => true, () => false)
+    if (!exists) {
+      const stubPath = path.join(os.tmpdir(), 'tongwen-fake-verify.mjs')
+      const stub = [
+        "let raw = ''",
+        "process.stdin.setEncoding('utf8')",
+        "process.stdin.on('data', (chunk) => { raw += chunk })",
+        "process.stdin.on('end', () => {",
+        '  const payload = JSON.parse(raw || "{}")',
+        '  const claims = Array.isArray(payload.claims) ? payload.claims : []',
+        "  process.stdout.write(JSON.stringify({",
+        "    verdict: 'allow',",
+        "    by: payload.by || 'fake-verify',",
+        '    total: claims.length,',
+        '    round: 1,',
+        "    summary: '桩：全部当通过',",
+        "    results: claims.map((c) => ({ claim: c.claim, ok: true, actual: 'stub', ms: 0 })),",
+        '  }))',
+        '})',
+      ].join('\n')
+      await fsp.writeFile(stubPath, stub + '\n', 'utf8')
+      process.env.TONGWEN_VERIFY_SCRIPT = stubPath
+    }
+  }
+
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'tongwen-smoke-'))
   const { ctx, registered, contexts } = createFakeCtx()
 
   const dispose = apply(ctx, { root })
 
-  await check('注册了 20 个工具', () => {
-    assert.equal(registered.size, 20)
-    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call', 'restart_dsh']) {
+  await check('注册了 21 个工具', () => {
+    assert.equal(registered.size, 21)
+    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call', 'restart_dsh', 'focus_context']) {
       assert.ok(registered.has(name), `缺少工具 ${name}`)
     }
   })
@@ -1294,6 +1300,34 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     const known = unknown.json?.data?.knownAbilities ?? unknown.json?.knownAbilities
     assert.ok(Array.isArray(known), '未知能力要把已知的列出来')
     assert.ok(known.includes('cli-echo.read'), '已知能力里要有这个器官的那条')
+  })
+
+  await check('0.5.20 相关性路由：按任务只给该读的页，不一股脑推（上传→隐私手册 / 插件→联动契约 / 无关→兜底）', async () => {
+    // ① 上传/发布：只该指向隐私清洗与交接规范
+    const publish = await call('focus_context', { task: '把书同文推到公开仓库，先把隐私清干净' })
+    assert.equal(publish.ok, true, publish.message)
+    assert.deepEqual(publish.topics.map((t) => t.id), ['publish'], '上传任务只该命中 publish')
+    const publishDocs = publish.read.map((d) => d.path)
+    assert.ok(publishDocs.some((p) => p.includes('上传仓库前的隐私清洗')), '上传要先读隐私手册')
+    assert.ok(!publishDocs.some((p) => p.includes('联动契约')), '上传任务不该推联动契约')
+
+    // ② 做插件：指向契约与联动
+    const plugin = await call('focus_context', { task: '给插件加一个工具，走名片和联动契约' })
+    assert.equal(plugin.ok, true, plugin.message)
+    assert.deepEqual(plugin.topics.map((t) => t.id), ['plugin'])
+    const pluginDocs = plugin.read.map((d) => d.path)
+    assert.ok(pluginDocs.some((p) => p.includes('联动契约')), '做插件要先读联动契约')
+    assert.ok(!pluginDocs.some((p) => p.includes('隐私清洗')), '做插件不该推隐私手册')
+
+    // ③ 不相干的任务：退回手册总览，不硬猜
+    const fallback = await call('focus_context', { task: '今天天气怎么样' })
+    assert.equal(fallback.topics[0].id, 'general', '认不出来就退回 general')
+    assert.ok(fallback.read.map((d) => d.path).includes('handoff/手册总览.md'), '兜底给手册总览')
+
+    // ④ 没有 task：当场拒，不猜
+    const missing = await call('focus_context', {})
+    assert.equal(missing.ok, false)
+    assert.equal(missing.errorCode, 'E_VALIDATION_BLOCKING')
   })
 
   const failed = checks.filter((item) => !item.ok)

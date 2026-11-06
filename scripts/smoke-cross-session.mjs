@@ -72,8 +72,8 @@ async function main() {
     return spec.execute(args)
   }
 
-  await check('注册了 20 个工具（9 旧 + 8 新 + 2 器官 + 重启广播）', () => {
-    assert.equal(registered.size, 20)
+  await check('注册了 21 个工具（9 旧 + 8 新 + 2 器官 + 重启广播 + focus_context）', () => {
+    assert.equal(registered.size, 21)
     for (const name of ['project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'restart_dsh']) {
       assert.ok(registered.has(name), `缺少工具 ${name}`)
     }
