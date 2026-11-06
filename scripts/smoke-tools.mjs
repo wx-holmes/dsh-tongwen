@@ -1479,6 +1479,25 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     )
   })
 
+  await check('0.5.28 账本日报动态预读：任务提到账本/花费就带最近两天日报，不相关不带', async () => {
+    await fsp.mkdir(path.join(root, 'logs', '账本'), { recursive: true })
+    await fsp.writeFile(path.join(root, 'logs', '账本', '2026-11-06.md'), '# 账本 11-06\n\n| 调用次数 | 1 |\n', 'utf8')
+    await fsp.writeFile(path.join(root, 'logs', '账本', '2026-11-07.md'), '# 账本 11-07\n\n| 调用次数 | 2 |\n', 'utf8')
+    await fsp.writeFile(path.join(root, 'logs', '账本', 'README.md'), '# 账本目录说明\n', 'utf8')
+    const led = await call('focus_context', { task: '看看这个月的账本花费' })
+    const paths = led.read.map((d) => d.path)
+    assert.ok(paths.includes('logs/账本/2026-11-07.md'), '要带最近一天的账本日报')
+    assert.ok(paths.includes('logs/账本/2026-11-06.md'), '要带前一天的账本日报')
+    assert.equal(paths.includes('logs/账本/README.md'), false, 'README 不推')
+    assert.ok(paths.includes('logs/账本/记录规范.md'), '记录规范照旧要带')
+    const off = await call('focus_context', { task: '今天天气' })
+    assert.equal(
+      off.read.some((d) => String(d.path).startsWith('logs/账本/') && /\d{4}-\d{2}-\d{2}/.test(d.path)),
+      false,
+      '不相关就不推账本日报',
+    )
+  })
+
   const failed = checks.filter((item) => !item.ok)
   for (const item of checks) {
     console.log(`${item.ok ? '✓' : '✗'} ${item.name}${item.ok ? '' : ` — ${item.error}`}`)
