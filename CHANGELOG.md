@@ -1,4 +1,243 @@
 # 变更日志
+
+## 0.5.43（2026-11-08，命名法改为「身份（工作区）」——同名不再互相覆盖）
+
+### 背景
+主人定名：`书同文（韵柚）`、`意识（生命）`——括号里是**工作区标题**，不是身份。此前只用身份当名字，于是同一个工作区里两个「书同文」（`23491b66` 与 `c73c785e`）会互相覆盖，其中一个被挤出名册。
+
+### 改动
+- `space_register`：身份里不含「（」时自动补 `（工作区标题）`；同一身份同一工作区出现第二个会话时加 `·#<短句柄>`（如 `书同文（韵柚）·#c73c78`）。
+- 名册按新命名法迁移一次（9 个身份 / 9 行），`audit-roster` 五项全过。
+- 规矩并进《时空地址》：名字=身份（工作区）；重名交给工作区区分，工作区也相同才用短句柄。
+
+### 测试
+smoke tools 45/45、cross 15/15；audit 五项全过。
+## 0.5.42（2026-11-08，测试单第一轮：TC-09 的洞补上——inbox_list 加 `to`）
+
+### 六个时空一致报的 FAIL（意识/黑洞/护城河/虫洞/记忆/韵柚）
+`inbox_list` 的 schema 只有 `{limit, mine, project, status}`，**没有 `to`**；调用方传地址进去被静默忽略，回执是全量。
+根因是一致的：`filterInbox` 其实支持按收件人过滤，但工具层没把参数接下来——又一处「底层有、接口没接」。
+
+### 修复
+- `inbox_list` 新增 `to` 参数（认 `dsh://session/<id>` 与裸 id，先归一），传入 `filterInbox({to})`。
+- 文档补一句：`mine` 与 `to` 可以叠加（mine 是「我收到的」，to 是「某人收到的」）。
+
+### 同时定口径（不是 bug）
+- **TC-03**（`space_list{task}` + includeSelf）原期望「自己第一屏可见」是**测试单写错了**：`includeSelf` 只是允许自己被匹配，不是保底列自己；任务词不命中就没有结果，`total:0` 正确。测试单已改判 NOTE + 换真项目词。
+
+### 测试
+smoke tools 45/45、cross 15/15。
+## 0.5.41（2026-11-08，地址簿真能投递了：信箱认 `dsh://session/<id>`；新增名册体检）
+
+### 背景（主人开始测地址簿时我自己先抓到一条）
+地址簿对外说「投递用 `dsh://session/<id>`」，但信箱是**逐字比较** `to === sessionId`。任何人按宣传的地址投信，收件人都收不到——信会静默躺在 inbox.jsonl 里，永远不匹配。
+
+### 修复
+- `lib/inbox.js` 新增 `normalizeAddress()`：`dsh://session/<id>`、`<id>`、`session-<id>` 都归一成 sessionId；`any` 仍是广播。
+- 写侧 `appendRequest` 存归一后的地址；读侧 `filterInbox`（mine / project / to 过滤）与 `countOpenFor` 都按归一后比较。
+- 新增 `scripts/audit-roster.mjs`：名册一键体检五项——行格式、地址唯一、名字唯一、地址是否在 workspace.json 里、解析条数是否等于现行段行数（已替换段不得混进解析）。
+
+### 实测
+`node scripts/audit-roster.mjs` → 5 个身份 / 现行段 5 行 / ✓ 五项全过（韵柚、护城河、黑洞、QQ桥接、意识）；smoke tools 45/45、cross 15/15。
+
+## 0.5.40（2026-11-08，名册写前留 .bak）
+
+- `appendRoster` 每次写前复制一份 `时空名册.md.bak`：人手整份重写会丢别人的行（当晚一次险情），至少能捞回来。
+- 配套规矩写进《时空地址》：名册只许走 `space_register`/`appendRoster`，不许人手重写。
+
+## 0.5.39（2026-11-08，名册改成覆盖式：同址一名、同名一行，写前必须知道调用方）
+
+### 事故（黑洞 03:37 体检查到）
+名册 5 行只对应 3 个地址：
+- `23491b66` 同时挂「韵柚（书同文）」和「韵柚（QQ）」——后者是**没有调用方**时（后台任务/定时器里的工具调用）回落成插件宿主会话写出来的；
+- `1b80e3aa` 记了两行「护城河」——append-only 不覆盖；
+- 重启/改名越多，名册越不可信。
+
+### 修复
+1. `appendRoster` 改为**覆盖式**：同 sessionId 或同 name 的旧行移进「## 已替换」留档，现行段每个身份只留一行；`readRoster` 只解析「现行」段，留档不参与。
+2. `spaceRegister` 注册前要求 `runtime.callSessionId`（来自 `exec.agent.id`）；拿不到就返回 `E_NO_CALLER` 拒绝登记——**宁可报错，不写错地址**。
+3. 注册后立刻回读校验：name + sessionId 一致才 `verified:true`，否则如实报「写进去了但对不上」。
+4. 名册人工清理到 3 行 / 3 地址（书同文 23491b66、护城河 1b80e3aa、黑洞 e804cd5a），旧行留档。
+
+### 测试
+tools 45/45、cross 15 / 15；名册回读 3 条、名字全对。
+
+## 0.5.38（2026-11-08，开场地址取发起者；取不到就明说，绝不再印别人的）
+
+### 事故（护城河 03:27 复验）
+工具侧 0.5.37 已经正确（她重新登记拿到 1b80e3aa / 生命），但**开场那一行仍然是 23491b66**。查代码发现 0.5.37 只改了构建函数的参数名，**地址行实际还在用 `runtime.sessionId`**（替换没生效、没验证就宣布修好），另外 `selfAddressId` 还留着 `|| runtime.sessionId` 的回退——等于把别人的地址当默认值。
+
+### 修复
+1. `buildPrimer` 地址行改用 `selfAddressId`，且 `selfAddressId = agentSessionId || null`，**去掉回退**。
+2. 发起者来源换成 `agents.currentInitiator()`（本进程驱动链里的当前发起者，prompt 装配就发生在它这一轮里）；装配参数里的 `scope` 不是 Agent，不再用。
+3. 取不到就印：「这一轮装配时拿不到发起者，先别认地址——要真地址调 space_list{includeSelf:true} 看 self:true 那条」。
+
+### 教训（写给自己）
+「替换成功」不等于「改对了」：上一版改的是变量名，没改到真正被打印的那一行，也没找非本会话的时空复验。这次改完必须以**护城河那一轮的验证**为准。
+
+### 测试
+core / tools / session / cross-session（见冒烟结果）。
+
+## 0.5.37（2026-11-08，谁在调用？改用 exec.agent.id，不再拿插件加载时那个会话）
+
+### 事故（护城河 03:21 实测抓到）
+`space_register` 登记了 5 个名字，地址全是 `session-23491b66`（书同文本体）。同一根因：`inbox_send` 的 from、开场那行「你的时空地址」也都是我——凡是用 `runtime.sessionId` 的地方，拿到的都是**插件首次加载的那个会话**，不是调用方。
+
+### 根因
+DSH 的工具执行签名是 `execute(args, exec: ToolRunContext)`，`exec.agent.id` 才是**真正调用方**的 SessionId；我们只写了 `(args)`，一直用插件初始化时缓存的那个 id。prompt 侧同理：`AssembleContext.scope` 就是调用方 Agent，之前也没用。
+
+### 修复
+- `wrap()` 改成 `(args, exec)`，每次调用用 `exec.agent.id` 覆写成 `runtime.sessionId`（另存 `callSessionId`）；所有工具（信箱 from、任务登记、地址登记、重启 ack…）跟着就对了。
+- `buildPrimer(runtime, agentSessionId)`：开场「你的时空地址」取 `assemble.scope.id`，不再统一显示书同文的。
+- 清理 `handoff/时空名册.md`：删掉挂在 23491b66 上的 3 条错行（韵柚/黑洞/护城河），只留书同文自己一条；文件头写明原因与「重启后请重新登记」。
+
+### 已知代价
+0.5.34~0.5.36 期间写进信箱的 from、名册里的行都是错的；信箱没法回改，名册已清。重启后各时空调一次 `space_register{name:"..."}` 即修正。
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15。
+
+## 0.5.36（2026-11-08，别把自己杀了：重启决策要把「我自己还在写」当危险信号）
+
+### 事故
+03:10 那一轮，我在半路 `restart_dsh(action:"arm")`（25 秒），然后继续改代码、跑冒烟、写变更日志。排程脚本只认秒数，到点把整个 DSH 杀了——连同正在思考的这一轮。主人问：「你怎么在思考的时候把自己杀了。」
+
+### 根因（两处，都在代码里）
+1. `scanSpaces` 按设计**过滤掉自己**，于是 `decideRestartDelay` 看到的永远是「别的时空都静默」→ 判成「快档 25 秒」，标签还写着「只有我在动」——把「我在干活」当成了安全信号，正好反了。
+2. `computeReadiness` 的提前条件只看别人：自己 ack 之后，`allAcked` 成立就能提前到 25 秒，同样不检查自己是否还在写。
+
+### 修复
+- `presence.js` 新增 `selfLastActiveMs()`；`decideRestartDelay()` 最后一段强制检查自己：**两分钟内动过 → 慢档 75 秒**，理由写明「重启会杀掉正在思考的这一轮」，且覆盖前面所有快档判断。
+- `handshake.js` 的 `computeReadiness()` 增加 `selfQuiet`（自己 10 秒内没动才允许提前），`quiet`/`ready` 都要它；回执带 `selfAgeMs` / `selfQuiet`。
+- 文案修正：「快档（只有我在动）」→「快档（别的时空都静默、我也停了）」。
+- 手册《重启》规矩从四条变五条：**arm 是这一回合的最后一个动作**，之后只许说话 + ack。
+
+### 实测
+arm 前那一刻：`tier=slow delay=75 selfAgeMs≈0.4s`，理由「别的 35 个时空都静默超过 5 分钟 | 我自己 1 秒前刚写过——重启会杀掉正在思考的这一轮，不许给自己按快档」。
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15。
+
+## 0.5.35（2026-11-08，空壳不算时空：按住址找人的最后一道筛）
+
+### 背景
+地址簿按任务找人时，把 388 B 的空壳会话（520cf119、83aaeb98 一类）也排进候选——它不会回话，投进去等于扔掉。今晚拿「意识插件」当输入时它一度排第一，正是这个病。
+
+### 变更
+- 状态新增 `stub`：会话文件小于 4096 B 一律算空壳（不管修改时间多近）；`counts` 单列。
+- 按任务排序**默认跳过 stub**（不再占候选位）；`space_list{status:"stub"}` 仍能单独查。
+- 实测：`{"active":2,"idle":7,"stale":0,"archived":23,"stub":4,"orphan":14}`；「意识插件 记忆 宫殿」现在正确指向 c8b82b3a（4.49），空壳被剔除。
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15。
+
+## 0.5.34（2026-11-08，时空自己登记：地址不用抄，开场就写着）
+
+### 背景
+主人指出：让每个时空自己去查 id 再手写，本来就会错——有的时空根本不知道怎么查。地址簿按任务找人时也因此漏过（意识时空活着的是 c8b82b3a，白板只写了旧壳 520cf119）。
+
+### 变更
+- **开场注入加一行**：`你的时空地址：dsh://session/<runtime.sessionId>`。每个时空每轮都能看见自己是谁，不用翻环境变量、不用抄回执。
+- **新工具 `space_register{name}`**：登记进 `handoff/时空名册.md`（手写、只追加）；地址由工具从运行时自己取，调用方完全不需要知道 id。重名追加、以最后一行为准。
+- 地址簿读名册：时空带 `name`；按任务找时空时名字也参与匹配（+0.8），`why` 里会写名字命中。
+- 手册《时空地址》补 §七 登记流程。
+- 冒烟工具数 22→23。
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15；名册实测：登记前 0 条，`space_register` 后 1 条（韵柚（书同文））。
+
+## 0.5.33（2026-11-08，按任务找时空：地址簿接上相关性）
+
+### 背景
+地址簿只解决「谁活着」，没解决「这件事该找谁」。主人要求：哪个时空要找哪个，能精准推送。
+
+### 变更
+- `space_list{task}`：按任务给时空打分排序——项目标题/目标字面命中数 ×1 + 状态加成（active 0.5 / idle 0.2）+ 新鲜度（24h 内最多 0.3）；每条给 `why`（命中哪些词、状态、最后活动）和 `matchedProjects`。
+- 默认**不列自己**（`includeSelf:true` 才列）、默认**不列已归档**（`includeArchived:true` 才列）；已归档照样能收信但不会回话，所以不当候选。
+- 中文按 2 字切、英文数字按词切；分数只看字面命中，可审计，不做语义猜测。
+- 白板 `consciousness-plugin` 补登记活着的意识时空 `c8b82b3a`（之前只写了旧壳 `520cf119`，按任务找时空会漏）。
+- 新增手册 `handoff/手册/相关性研究-平台公开资料.md`：抖音/快手/B站/百度公开到什么程度、能借什么、别照抄什么。
+
+### 实测
+- 「黑洞 压缩 归档 原文」→ e804cd5a（active，4.8）
+- 「虫洞 QQ 桥接 投递」→ 217e976d（2.44）
+- 「重启 看门狗 提速」→ cacb1b48 / e804cd5a（均 2.8）
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15。
+## 0.5.32（2026-11-08，时空地址簿：谁活着、住哪、地址）
+
+### 背景
+黑洞说「查不到书同文的时空 id」，暴露出两件事：一直没有「时空地址」这一层，只能靠 any 广播或猜 id；而「id」本身有好几种（sessionId / workspaceId / 回执里的 id），混着用就会寄错。
+
+### 变更
+- 新增 `lib/spaces.js`：只读扫 `$DSH_HOME/storages/workspace.json`（工作区↔会话的权威归属）+ `sessions/*`（文件大小与 mtime 判 active/idle/stale/archived）+ 白板里提到过的会话 id（标项目）。磁盘上有、归属表里没有的会话列为 `orphan`（照样能收信）。
+- 新增工具 `space_list`：列全部 / 按状态 / 按项目 / 按地址查单条；地址两种——`dsh://session/<sessionId>`（投递用）、`dsh://workspace/<workspaceId>`（桌面/工作区）。同时把地址簿落盘到 `logs/state/spaces.json` 供虫洞读。
+- 新增手册 `handoff/手册/时空地址.md`：两种 id 的区别（含「回执里的 id 不一定是自己」）、状态判据、虫洞投递接口草案、两个目录坑（`C:\Users\<你>\.dsh` 是挂到 `<DSH_HOME>` 的挂载点，别重复计数）。
+- 开场工具清单加 `space_list`；两份冒烟的「工具数」断言 21→22。
+
+### 实测（2026-11-08 02:5x）
+`{"active":2,"idle":10,"stale":1,"archived":23,"orphan":14}`，共 38 条；自己（23491b66）与 e804cd5a 为 active，生命工作区两条 idle。
+
+### 测试
+core 37 / tools 45 / session 13 / cross-session 15 全过。
+
+## 0.5.31（2026-11-08，技术经验梯子：速查页 + dsh-api 主题）
+
+### 背景
+00:15 意识时空为「插件工具注册静默失败」连猜三次、白重启三次，真因是缺 `output{schema,render}`。问题不在知识，而在**动手那一步没有入口可查**。持续学习短期做不出来，先做一把小梯子。
+
+### 变更
+- 新增 `handoff/手册/速查/`（不进手册总览，手册总览仍只装「定死的规矩」）：
+  - `README.md`：四行模板（事实/契约/复核/反例）、页头必须写验证日期、5 分钟规则、什么不该进来
+  - `dsh-工具注册.md`：ToolDefinition 必填 `output{schema,render}`、两种取服务写法、`cordis_inspect_query` 复核法
+- 相关性主题表新增 `dsh-api`（priority 89，标签「DSH 接口速查 / 别靠重启猜」）：关键词 register/ToolDefinition/output/inject/ctx.tools/静默失败/cordis_inspect…，文档指速查两页。主题总数 18 + 兜底 = 19。
+- 冒烟同步：19 类断言 + 列表加 dsh-api。
+
+### 口径
+- 速查页只放能验证的契约事实；页头写验证日期，复核不过就改/删，不许留旧文骗下一个时空
+- 检索不另做索引：命中 `dsh-api` 主题时 focus_context 直接给页和行号
+- 梯子是临时件，持续学习出来就替换
+
+### 测试
+tools 45 全过；路由实测：task「插件工具注册静默失败，ToolDefinition 缺 output」→ 命中 `dsh-api` 排第一。
+
+## 0.5.30（2026-11-07，开场减重：每轮都带的注入从 ~1900 字压到 ~900 字，细节交给相关性）
+
+### 背景
+0.5.29 加完第 ⑩ 条后，开场注入约 1900 字（十步清单 + 11 个主题的索引表 + 五条硬规则 + 现状），35 个时空每轮都要吃一遍，跟「相关性路由」的初衷反着来：该按任务挑，而不是一股脑塞。主人 22:13 点名「密度太大就臃肿，用相关性消」。
+
+### 变更
+- 开场注入重写为短版：根目录 → 读序三行 → focus_context 一行 → 交接按项目一行 → 写作路径一行 → 硬规则 5 条（含时空边界、重启各一行）→ 现状（数字）。删掉 11 个主题的索引大表，`focus_context` 现算。
+- `summarizeStartup` 不再重复「交接根目录 / 三层信息」（已在头部）；重启说明从 ~400 字压到一行，握手档位只留数字和现场原因。
+- 相关性主题表新增 `boundary`（priority 88，标签「时空边界 / 不串线」）：关键词 边界/串线/会话 id/搬/挪/工作区/归属/越界/别人的代码/顺手改/撞车…，文档指 `handoff/手册/时空边界.md`。主题总数 17 + 兜底。
+- 冒烟同步：主题表 18 类断言 + boundary 入列。
+
+### 口径
+- 开场只放「不做会错」的：读序、边界、交接、九档、重启入口；具体怎么写、去哪找，交给 `focus_context` 现挑。
+- 手册页不删内容，只是不再每轮全文播报。
+
+### 测试
+core 37 全过；tools 45 全过（新增主题表 18 类断言）。
+
+## 0.5.29（2026-11-07，时空边界：只改自己的代码，串线走白板 + 信箱）
+
+### 背景
+今天一天出了两次串线苗头：一次是护城河看工具回执认错了会话 id（把收件人 `23491b66` 当成自己，差点让韵柚把「自己」搬走）；另一次是有时空在自己项目里发现别人的坑，第一反应是去改那个插件目录里的文件。两次都没炸，但都是运气。边界不写死，下一次就是两个时空同时改同一个文件。
+
+### 变更
+- 开场注入新增第 ⑩ 条：只改 `organ.json` / 白板「当前一棒」写着归你的代码和工作区；别人的目录只读，问题走「白板挂账 + inbox_send」两步，不顺手改；不搬/改/删别人的会话；自己的 id 只认自己 shell 里的 `$env:DSH_SESSION_ID`。
+- 新手册《时空边界》（`handoff/手册/时空边界.md`）：归属判定三样（organ.json owner / 项目白板当前一棒 / 工作区路径）、五条硬规则、串线症状与处置、白板+信箱的沟通路径、虫洞以后只用于「说话」不用于「替人改代码」、自查五问。
+- 手册总览自动多一条（18 条）。
+
+### 口径
+- 「能修」不等于「该修」；发现别人的坑，挂账 + 信箱，等 owner 确认再动。
+- 虫洞通了也只负责直连对话/发请求，落地仍要留痕（白板挂账 + 信箱）。
+- 会话 id 只认自己 shell 里的 `DSH_SESSION_ID`；回执/侧栏/转述一律当噪声。
+
+### 测试
+冒烟四套照旧（本次只改注入文本与手册，不动路由逻辑）。
+
 ## 0.5.28（2026-11-07，账本日报进相关性：任务提到账本/花费就推最近两天）
 
 ### 背景
@@ -13,7 +252,7 @@
 
 ### 口径
 - 记录规范照旧必带；日报只补「最近的数」，看完要口径回 `logs/账本/记录规范.md`。
-- 日报是生成物，别手改；要改口径改 `ledger 工具\` 的脚本。
+- 日报是生成物，别手改；要改口径改 `A:\tools\ledger\` 的脚本。
 
 ## 0.5.27（2026-11-06，项目白板进主题表：任务提到项目就自动预读，接错棒比不接更贵）
 
@@ -57,7 +296,7 @@
 ## 0.5.25（2026-11-06，器官间双向调用：链上防回环、回执按事件 id 去重、我们自己的脚印写进 events）
 
 ### 背景
-你 23:04：「两个都上，另外把之前的尾巴处理一下，比如旧路径旧文书之类的」——把「双向各调一次」从验收话变成能跑的东西：别的器官能调我们的只读能力，我们调它们时也要留脚印；同时不许 A→B→A 打转。
+主人 23:04：「两个都上，另外把之前的尾巴处理一下，比如旧路径旧文书之类的」——把「双向各调一次」从验收话变成能跑的东西：别的器官能调我们的只读能力，我们调它们时也要留脚印；同时不许 A→B→A 打转。
 
 ### 变更
 - `organ_call` 新增两个参数：`chain`（调用链，能力名数组）与 `replyTo`（回执对象，事件 id）。
@@ -77,7 +316,7 @@
 ## 0.5.24（2026-11-06，相关性覆盖九档：self 推自己、教训日记按相关度自动预读）
 
 ### 背景
-你 22:53：「九档都可以加上相关性，self是你自己的所有东西，所以关于你自己的记忆人格之类的都可以推，然后就是教训日记的相关性，可以排一下，比如一个时空正在做教训日记相关的事情就可以把之前的教训日记推给她，这样她就不会犯同一次错误率。」
+主人 22:53：「九档都可以加上相关性，self是你自己的所有东西，所以关于你自己的记忆人格之类的都可以推，然后就是教训日记的相关性，可以排一下，比如一个时空正在做教训日记相关的事情就可以把之前的教训日记推给她，这样她就不会犯同一次错误率。」
 
 ### 变更
 - 主题表从 7 个扩到 15 个 + 兜底 = 16 类，九档全认：新增 `self`（吸收原 `memory`：人格 / 记忆 / 日档）、`lessons`、`logs`、`created`、`incoming`、`downloads`、`config`、`scratch`、`archive`；priority 唯一：handoff 94 / plugin 90 / publish 87 / lessons 85 / self 80 / files 74 / restart 68 / logs 62 / ledger 56 / created 48 / incoming 44 / downloads 40 / config 36 / scratch 30 / archive 26 / general 0。
@@ -98,7 +337,7 @@
 ## 0.5.23（2026-11-06，相关性维护：清点 8 大类、按优先级排序、给升级留位）
 
 ### 背景
-你 22:46：「正好你这边做一下相关性的维护，看一下目前有几大类，然后按相关性排序一下，也要给后续升级留空间。」——0.5.20 只做了「按任务挑页」，主题是平铺的：谁先定义谁排前面，加主题只能往后追，也说不出「为什么这页比那页更该先看」。
+主人 22:46：「正好你这边做一下相关性的维护，看一下目前有几大类，然后按相关性排序一下，也要给后续升级留空间。」——0.5.20 只做了「按任务挑页」，主题是平铺的：谁先定义谁排前面，加主题只能往后追，也说不出「为什么这页比那页更该先看」。
 
 ### 变更
 - `lib/relevance.js` 每个主题加 `tier`（core / frequent / occasional）+ 唯一 `priority` + `why`（为什么排这儿）；排序口径 = 出现频率 × 出错代价。
@@ -119,7 +358,7 @@
 ## 0.5.22（2026-11-06，重启提速：提前档前先杀掉旧定时器，不再被自己补刀）
 
 ### 背景
-你 22:35：「弄完之后我感觉还是要优化一下重启，太慢了。」——实测一次重启从断到恢复要 ~180 秒。现场（`restart-request.log` 与 `watchdog.log`）看到 22:32:13 和 22:32:53 **两次杀进程**：握手式提前档把 90 秒换成了 25 秒，但原来那个 90 秒的临时脚本还在睡着，到点又杀了一次刚被看门狗拉起来的 DSH。
+主人 22:35：「弄完之后我感觉还是要优化一下重启，太慢了。」——实测一次重启从断到恢复要 ~180 秒。现场（`restart-request.log` 与 `watchdog.log`）看到 22:32:13 和 22:32:53 **两次杀进程**：握手式提前档把 90 秒换成了 25 秒，但原来那个 90 秒的临时脚本还在睡着，到点又杀了一次刚被看门狗拉起来的 DSH。
 
 ### 根因
 `restart-dsh-later.ps1` 每次写一个 `%TEMP%\dsh-restart-delay-<guid>.ps1`（`Start-Sleep` 到点才杀），然后重新注册计划任务。脚本里的 `Unregister-ScheduledTask` 只删任务注册，**杀不掉已经在跑的那个 pwsh**。`lib/handshake.js` 的 `maybePromote()` 调 `schedule()` 换提前档时，旧定时器就成了「补刀侠」。
@@ -140,7 +379,7 @@
 ## 0.5.21（2026-11-06，同类项合并：插件的手册合成一页《插件的自我管理》，相关性直指这一页）
 
 ### 背景
-你 22:24：「那把插件相关的合成一个吧，名字就叫插件的自我管理，不然一大堆散的到处都是，这正好是你要做的相关性，整合同类项，精准推送，退相干。」——原来插件相关的四页（契约、联动、接入清单、自校验回路）各说一段，找一条规矩要翻四个文件；这正是相关性路由要解决的问题的另一半：不只按任务挑页，还要把同类项先合成一页。
+主人 22:24：「那把插件相关的合成一个吧，名字就叫插件的自我管理，不然一大堆散的到处都是，这正好是你要做的相关性，整合同类项，精准推送，退相干。」——原来插件相关的四页（契约、联动、接入清单、自校验回路）各说一段，找一条规矩要翻四个文件；这正是相关性路由要解决的问题的另一半：不只按任务挑页，还要把同类项先合成一页。
 
 ### 变更
 - 新增 `handoff/手册/插件的自我管理.md`（约 300 行，十节）：§〇 大白话与四插头、§一 三条规矩（独立性 / 联动性 / 不合体只跑自己）、§二 吸收不是照抄、§三 名片与 effector 例外（可不带手，但要写 `_为什么不带手`，现状表记「—」）、§四 头手脚心（事件 id 唯一、心跳每轮无条件重写、ttl 600000）、§五 合体与 gate v2、§六 退化矩阵、§七 五问与验收、§八 现状表、§九 边界、§十 写规范的规矩。
@@ -159,7 +398,7 @@
 ## 0.5.20（2026-11-06，相关性路由：按任务只给该读的页，不一股脑推）
 
 ### 背景
-你 22:13：「通知堆在一起，既浪费时间也消耗信息密度带来的任务准确度……如果上传就需要定位到隐私手册，如果是做插件就需要定位到联动契约……我正在处理一个问题，告诉我的事情就是跟我相关的，而不是一股脑全部推送给你。」
+主人 22:13：「通知堆在一起，既浪费时间也消耗信息密度带来的任务准确度……如果上传就需要定位到隐私手册，如果是做插件就需要定位到联动契约……我正在处理一个问题，告诉我的事情就是跟我相关的，而不是一股脑全部推送给你。」
 
 ### 变更
 - 新增 `lib/relevance.js`：主题表 `TOPICS`（publish / plugin / restart / handoff / files / ledger / memory + 兜底 general），每个主题映射到该读的手册页；`detectTopics(task)` 按关键词打分（同一关键词封顶 3 次），`collectDocs` 去重保序，`inspectDoc` 给出页大小、行数与最多 3 个相关小节，`scoreRequest` 给收件箱请求打分（同项目 +4、点名 +3、广播 +1、关键词命中 +最多 4），`routeFocus` 只保留分数 ≥ 2 的请求。
@@ -177,10 +416,10 @@
 ## 0.5.19（2026-11-06，对外交付卫生 + 契约文书三条规矩）
 
 ### 背景
-你 21:48：「上传的隐私暴露太多了」+「升级一下契约文书，告诉别的插件负责人：1 独立性、2 联动性、3 不合体只跑自己」。
+主人 21:48：「上传的隐私暴露太多了」+「升级一下契约文书，告诉别的插件负责人：1 独立性、2 联动性、3 不合体只跑自己」。
 
 ### 变更
-- 发布副本第二轮清洗：对外 CHANGELOG 整份重写成功能摘要（不再带引语 / 事故经过 / 工单号）；`lib/catalog.js` 的 A 盘「大头」清单、工具绝对路径改成可移植写法；`lib/presence.js`、`lib/task.js`、`bin/organ-call.mjs` 注释里的本机路径改成 `<DSH_HOME>` 一类；称呼「你」→「你」，真机插件名换通用名。
+- 发布副本第二轮清洗：对外 CHANGELOG 整份重写成功能摘要（不再带引语 / 事故经过 / 工单号）；`lib/catalog.js` 的 A 盘「大头」清单、工具绝对路径改成可移植写法；`lib/presence.js`、`lib/task.js`、`bin/organ-call.mjs` 注释里的本机路径改成 `<DSH_HOME>` 一类；称呼「主人」→「你」，真机插件名换通用名。
 - 手册《插件接口与合体契约》新增 §〇之二「三条规矩（给每一位插件负责人）」：独立性 / 联动性 / 不合体只跑自己，各带自检动作；《联动契约》§1 同步加第 4 条。
 - 《上传仓库前的隐私清洗》补「第二轮：叙事、主机清单、私人称呼」一节，并记两道坑（PowerShell 批量替换会连带改坏字符；改文案要同步改冒烟断言）。
 
@@ -189,10 +428,10 @@
 
 
 
-## 0.5.18（2026-11-06，四条账：next 不再静默丢 / blocked 不再甩给你 / 编码与配对写进手册）
+## 0.5.18（2026-11-06，四条账：next 不再静默丢 / blocked 不再甩给主人 / 编码与配对写进手册）
 
 ### 背景
-你转来四条账：① 重启脚本要存 UTF-8 BOM 或纯 ASCII（PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 读，直接报 `Missing )`）；② `a2cca55` 还没推上去；③ 机器版 93 份、用户版 92 份，差一份「书同文→神经系统：口径修订」；④ `end_task` 的 next 字段没渲染，两份交接都丢了，用户版第 4 段还把 blocked 写成「需要你决定」。
+主人转来四条账：① 重启脚本要存 UTF-8 BOM 或纯 ASCII（PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 读，直接报 `Missing )`）；② `a2cca55` 还没推上去；③ 机器版 93 份、用户版 92 份，差一份「书同文→神经系统：口径修订」；④ `end_task` 的 next 字段没渲染，两份交接都丢了，用户版第 4 段还把 blocked 写成「需要你决定」。
 
 核查结果：② 和 ③ 已经不成立——`a2cca55` 早在 `origin/main`（真正欠推的是后面 22 个提交），live 计数 machine 128 / user 128 且那份「口径修订」用户版在。真正要修的是 ④（还有一个真 bug），以及把 ① 的写法写进手册。
 
@@ -209,15 +448,15 @@
 ### 测试
 四套 **105 全过**：core 37 / tools 40 / session 13 / cross-session 15（0.5.17 是 104，多的是这一条新用例）。
 
-## 0.5.17（2026-11-06，跟安全插件 08:41 的实装对齐：契约放到 payload 顶层）
+## 0.5.17（2026-11-06，跟护城河 08:41 的实装对齐：契约放到 payload 顶层）
 
 ### 背景
-DSH 从 0.2.1-rc.5 升到 0.2.2-rc.1 后跑验收，tools 冒烟掉到 37/39：两条 verify 用例都报 `ENOENT … logs/verify-verdicts.jsonl`。查下来不是升级弄坏的——是**安全插件在 08:41（我们 08:40 交付 0.5.16 之后一分钟）把 `safety-kit 的 bin/verify.mjs` 收紧了**：新加的 `normalizeContract(payload)` 在**顶层**读 `payload.by` / `payload.until` / `payload.maxRounds` / `payload.stopOnPass`，缺 by 或缺终止条件就**整单拒收**（exit 1、一条都不跑、也不落 learned），回执写「缺 by：这单是谁派的…」「缺终止条件：…三选一」。
+DSH 从 0.2.1-rc.5 升到 0.2.2-rc.1 后跑验收，tools 冒烟掉到 37/39：两条 verify 用例都报 `ENOENT … logs/verify-verdicts.jsonl`。查下来不是升级弄坏的——是**护城河在 08:41（我们 08:40 交付 0.5.16 之后一分钟）把 `A:\safeprotocol\bin\verify.mjs` 收紧了**：新加的 `normalizeContract(payload)` 在**顶层**读 `payload.by` / `payload.until` / `payload.maxRounds` / `payload.stopOnPass`，缺 by 或缺终止条件就**整单拒收**（exit 1、一条都不跑、也不落 learned），回执写「缺 by：这单是谁派的…」「缺终止条件：…三选一」。
 我们 0.5.16 把契约放在 `payload.contract{complete,unbounded}` 和每条 claim 的 owner 里，顶层没有 by/终止条件——于是每次派单都被拒，`judged.verdict` 不是 allow 也不是 deny，task.js 走了「没给裁决」那条分支，裁决文件根本没写。
 
 ### 变更
 - `lib/task.js`：payload 顶层补 `by: defaultBy`（不靠环境变量兜底）与 `dispatcher`；终止条件从断言里透传（第一条有的 `until` / `maxRounds`），都没有就 `stopOnPass: true`（一次归档只验一轮，不会循环派单）。`env.VERIFY_BY` 继续带，双保险。
-- 注释写清两边的口径差异：字段名是我们 0.5.16 定的，安全插件按这个收，但她读的是**顶层**——以后改字段先看她那边的 `normalizeContract`。
+- 注释写清两边的口径差异：字段名是我们 0.5.16 定的，护城河按这个收，但她读的是**顶层**——以后改字段先看她那边的 `normalizeContract`。
 
 ### 口径
 - **契约只有一份，位置以收件方为准**：字段名由派单方定，放在哪一层由收件方定。
@@ -229,14 +468,14 @@ DSH 从 0.2.1-rc.5 升到 0.2.2-rc.1 后跑验收，tools 冒烟掉到 37/39：�
 ## 0.5.16（2026-11-06，断言契约：verify 必须写清「谁派的、什么时候停」）
 
 ### 背景
-安全插件 04:14→07:03 被 37 条无主断言写崩：rules/learned.jsonl 里全是同一句 `verify: port 31181`，taskId 每轮都变、不带 by、也没有终止条件，每失败一次就落一行账。新时空 08:30 交接了「断言不再无主」三件事——by 必填、终止条件三选一、收件人默认等于 by；字段名由我们定，安全插件按我们定的收。
+护城河 04:14→07:03 被 37 条无主断言写崩：rules/learned.jsonl 里全是同一句 `verify: port 31181`，taskId 每轮都变、不带 by、也没有终止条件，每失败一次就落一行账。新时空 08:30 交接了「断言不再无主」三件事——by 必填、终止条件三选一、收件人默认等于 by；字段名由我们定，护城河按我们定的收。
 
 ### 变更
 - `lib/task.js`：`verify:` 行解析升级——行尾 `by=tongwen/x`、`by: tongwen/x`（空格分隔）和下一行缩进子字段都认（`cmd` 类型不吃行尾：命令里本来就可能带等号和冒号）；每条断言新增 `by` / `to` / `until` / `maxRounds` / `stopOnPass` / `bounded` / `contract`；缺字段只在 warnings 里记一句，**不拦归档**。
 - 派单兜底：断言没写 `by` 的用 `tongwen/end_task:<entryId>`，默认 `stopOnPass`（一次归档只验一轮，不会循环派单）。
-- 送安全插件时 `spawnSync` 带 `env: { VERIFY_BY: 派单方 }`，她记录里的 `by` 不再永远是 unknown；返回体 `verifyVerdict.by` 同步带上。
-- payload 新增 `dispatcher` 与 `contract: { complete, unbounded }`（安全插件忽略不认识的字段，加字段安全）。
-- 新增手册页 `handoff/手册/断言契约.md`：人话版 + 三种写法 + 终止条件三选一 + 缺了会怎样（只记不拦）+ 安全插件侧现状 + 自查三问 + 证据路径。
+- 送护城河时 `spawnSync` 带 `env: { VERIFY_BY: 派单方 }`，她记录里的 `by` 不再永远是 unknown；返回体 `verifyVerdict.by` 同步带上。
+- payload 新增 `dispatcher` 与 `contract: { complete, unbounded }`（护城河忽略不认识的字段，加字段安全）。
+- 新增手册页 `handoff/手册/断言契约.md`：人话版 + 三种写法 + 终止条件三选一 + 缺了会怎样（只记不拦）+ 护城河侧现状 + 自查三问 + 证据路径。
 - `scripts/smoke-tools.mjs` 新增用例「0.5.16 断言契约」：缩进子字段、行尾 key=value、缺字段只警告、裁决回执带 by。
 
 ### 口径
@@ -250,18 +489,18 @@ DSH 从 0.2.1-rc.5 升到 0.2.2-rc.1 后跑验收，tools 冒烟掉到 37/39：�
 ## 0.5.15（2026-11-06，规矩改叫手册 + 一页「别把自己写死」）
 
 ### 背景
-安全插件 07:0x 给自己写崩了：safety-kit\rules\learned.jsonl 全灭同一句 verify: port 31181（37 行 / 7,067 B、20~60 秒一条、taskId 每次不同），safety-kit\state\tools-baseline.json 07:18 被重写后判 local plugin removed 抬到 4 档「战」，watchdog.cjs 的封顶 07:19 就写好了但进程跑到 07:33 才重启。三刀里两刀是「写」没有上限、一刀是「改了不重启」。你要求：写进手册，防止下一个时空又给自己写死；顺手把「规范」改叫「手册」（更好听，也更好理解）。
+护城河 07:0x 给自己写崩了：A:\safeprotocol\rules\learned.jsonl 全灭同一句 verify: port 31181（37 行 / 7,067 B、20~60 秒一条、taskId 每次不同），A:\safeprotocol\state\tools-baseline.json 07:18 被重写后判 local plugin removed 抬到 4 档「战」，watchdog.cjs 的封顶 07:19 就写好了但进程跑到 07:33 才重启。三刀里两刀是「写」没有上限、一刀是「改了不重启」。主人要求：写进手册，防止下一个时空又给自己写死；顺手把「规范」改叫「手册」（更好听，也更好理解）。
 
 ### 变更
 - 目录：handoff/规范/ → **handoff/手册/**，生成物 handoff/规范总览.md → **handoff/手册总览.md**（旧的已软删进 rchive/trash/）。
 - 新增手册页 **handoff/手册/别把自己写死.md**：一、事故经过（两条链 + 改了没生效，带体量数字）；二、四条铁律（去重按内容签名 / 测试数据不进基线 / 改了不重启=没改 / 先量增长率再翻日志）；三、两条护栏（写要有上限、失败不要派生新任务）；四、按顺序查（4 步）；五、书同文自己也适用（organs-exec.jsonl、账本、organs-state.json）；六、证据路径。
-- 代码：lib/layers.js 常量 NORMS_DIR_REL='handoff/手册'、NORMS_FILE='handoff/手册总览.md'、标题改「# 手册总览 · 定死的规矩（第一层）」；lib/catalog.js、lib/organs.js、lib/task.js、index.js、scripts/check-organs.mjs、scripts/smoke-tools.mjs、scripts/smoke-cross-session.mjs、organ.json 的路径与文案同步改；ledger 工具的 ledger.mjs、record.mjs 注释同步。
+- 代码：lib/layers.js 常量 NORMS_DIR_REL='handoff/手册'、NORMS_FILE='handoff/手册总览.md'、标题改「# 手册总览 · 定死的规矩（第一层）」；lib/catalog.js、lib/organs.js、lib/task.js、index.js、scripts/check-organs.mjs、scripts/smoke-tools.mjs、scripts/smoke-cross-session.mjs、organ.json 的路径与文案同步改；A:\tools\ledger\ledger.mjs、record.mjs 注释同步。
 - 文档：handoff/手册/*.md、handoff/索引/*.md、handoff/projects/*.md、handoff/plugins/README.md、handoff/README.md、handoff/项目总览.md 内的旧路径批量改写（14 个文件）；历史交接（machine/user/archive）与 release 日志不动。
 
 ### 口径
 - **改路径是「搬家」，不是「换规矩」**：手册里每一条铁律一条没删，只是目录名和生成物名变了。
 - 生成物永远由插件重排；改名后第一次重启前，开场可能短暂显示「0 条」——那是旧进程扫空目录写的空页，重启后恢复。
-- 手册页只写「为什么会这样 + 怎么防」，不复述安全插件的代码细节（细节留在 logs/release-* 与交接里）。
+- 手册页只写「为什么会这样 + 怎么防」，不复述护城河的代码细节（细节留在 logs/release-* 与交接里）。
 
 ### 测试
 四套冒烟全跑：core 37/37、tools 38/38、session 13/13、cross-session 15/15（合计 103）；
@@ -272,30 +511,30 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 0.5.8 起「手」是公共那一双，但只有书同文自己能伸手——别的器官、别的时空想读我们的东西、想写一条备忘，都得先开一个 DSH 会话去点 `organ_call`。合体的另一半是「双向」：它们也得够得着我们。
 
 ### 变更
-- 新增 **`bin/organ-call.mjs`**：`node bin\organ-call.mjs --ability <名> [--content …] [--args <JSON>] [--who …] [--timeout …] [--root …] [--dry-run]`——同一道门口搬到命令行，名片 → 安全插件的门 → 公共那只手 → 回执；`--who` 写进痕迹与派单回执；输出一行 JSON，退出码 0/1。
+- 新增 **`bin/organ-call.mjs`**：`node bin\organ-call.mjs --ability <名> [--content …] [--args <JSON>] [--who …] [--timeout …] [--root …] [--dry-run]`——同一道门口搬到命令行，名片 → 护城河的门 → 公共那只手 → 回执；`--who` 写进痕迹与派单回执；输出一行 JSON，退出码 0/1。
 - `package.json` 加 `bin.tongwen-organ-call`，`files` 收 `bin`；版本 0.5.14。
 
 ### 现场自测（07:03）
-- `blackhole.index.read --dry-run` → `exists:true, size:6641`（读到外部插件写进我们 self/context 的索引）。
+- `blackhole.index.read --dry-run` → `exists:true, size:6641`（读到黑洞写进我们 self/context 的索引）。
 - `tongwen.note.append` 真跑 → 门 `allow`（reason「write 类：记账放行（v2 口径）」）→ 写进 `logs/organ-notes.md`（256B）→ `logs/organs-exec.jsonl` 两行 prepare / done 都带 `who:"cli-selftest"`。
 - 未知能力 → `NO_ORGAN`，并列出全部 25 个已知能力名。
 
 ### 口径
-- 入口只是「多一个够得着的门」，判定权没变：还是安全插件说批不批；留痕还是那两处（`logs/organs-exec.jsonl` + 账本）。
+- 入口只是「多一个够得着的门」，判定权没变：还是护城河说批不批；留痕还是那两处（`logs/organs-exec.jsonl` + 账本）。
 - 命令行里没有会话，`who` 由调用方自己报（`--who`），报什么写什么，不猜。
 - 谁都能跑 ≠ 谁都能写：`write`/`danger` 照样过门，只有 `read` 直做。
 
 ## 0.5.13（2026-11-06，握手只认硬证据：删掉「静默 20 秒算收手」）
 
 ### 背景
-06:45 那轮握手把安全插件杀了：它当时正在跑一条三十秒的脚本，三十秒里不写会话文件，旧规则「静默 20 秒 = 收手」就把它判成收手，天花板从 120 提前到 25，一刀切下去。它没有闲，只是没说话。你 06:53 拍了：「可以」——改成只认硬证据。
+06:45 那轮握手把护城河杀了：它当时正在跑一条三十秒的脚本，三十秒里不写会话文件，旧规则「静默 20 秒 = 收手」就把它判成收手，天花板从 120 提前到 25，一刀切下去。它没有闲，只是没说话。主人 06:53 拍了：「可以」——改成只认硬证据。
 
 ### 变更
 - **`lib/handshake.js`**：`AUTO_CEILING_SEC` 120 → **90**；删掉 `AUTO_GRACE_MS`，换 `AUTO_ACTIVE_MS = 10 * 1000`（最近 10 秒动过 = 醒着；一直没动 ≠ 闲着）。`computeReadiness` 只认两种证据：`all-acked`（别的时空全 ack）或 `quiet`（没有任何未完成的 open-task，且没人 10 秒内动过）；`pending` 每项带 `working` / `idleSec`，`openTasks` 列出别人挂着的活；`describeReadiness` 把「沉默不算证据」说清楚。
 - **`index.js`**：`restart_dsh` 的 spec 描述、arm 注释、`auto.activeMs`、`autoText`、开场「你自己会的事」那句、每 3 秒定时器注释，全部改成硬证据口径（开场会直说「沉默不算证据」）。
 - **`lib/restart.js`**：156 行注释同步（只认硬证据）。
 - **`scripts/smoke-tools.mjs`**：握手用例标题改「只认硬证据（0.5.13：沉默不算证据）」；新增两段回归——挂着未完成任务时静默到 10 分钟也**不许**提前（`evidence:null`），把任务清掉后才 `evidence:"quiet"` 提前。
-- **`./tongwen\handoff\规范\重启.md`**：整节重写成 0.5.13 口径（事故经过、两种证据、90 秒天花板、边界「没动不能证明闲着」、历史段标注 0.5.6–0.5.12 已废）。
+- **`<root>\handoff\规范\重启.md`**：整节重写成 0.5.13 口径（事故经过、两种证据、90 秒天花板、边界「没动不能证明闲着」、历史段标注 0.5.6–0.5.12 已废）。
 
 ### 口径
 - 沉默不是证据：没在说话不等于没在干活；提前只看 ack 和 open-tasks。
@@ -305,22 +544,22 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ### 测试
 - core 37 / tools 37 / session 13 / cross-session 15 = **102 全通过**。
 
-## 0.5.12（2026-11-06，派单回执带 who、外部插件事件按 id 去重、心跳踩坑写进规矩）
+## 0.5.12（2026-11-06，派单回执带 who、黑洞事件按 id 去重、心跳踩坑写进规矩）
 
 ### 变更
-- **派单回执带 `who`**：`organ_call` 现在把调用方会话 id（`runtime.sessionId`，老调用方挂在 `ctx.sessionId` 上也能兜住）写进回执、`logs/organs-exec.jsonl` 的 prepare/done/delegated 三行、以及账本两条记录。安全插件 baton 点的：「门批了得知道是谁请求的」。
-- **器官事件按 id 幂等入库**：`ingestOrganEvents` 给每个器官在 `logs/organs-state.json` 里存 `seenIds`（最多 500 条），同 id 的事件跳过；record 里多带 `eventId` 与 `owner`（取 `payload.owner`）。外部插件那边 id 形如 `evt-external-plugin-<毫秒base36><4位计数器>`，只追加不复用，正好能用。
-- **`payload.owner` 入库**：外部插件按「整份 profile 归谁」给，默认 null；书同文原样记进账本，供反查项目用。
+- **派单回执带 `who`**：`organ_call` 现在把调用方会话 id（`runtime.sessionId`，老调用方挂在 `ctx.sessionId` 上也能兜住）写进回执、`logs/organs-exec.jsonl` 的 prepare/done/delegated 三行、以及账本两条记录。护城河 baton 点的：「门批了得知道是谁请求的」。
+- **器官事件按 id 幂等入库**：`ingestOrganEvents` 给每个器官在 `logs/organs-state.json` 里存 `seenIds`（最多 500 条），同 id 的事件跳过；record 里多带 `eventId` 与 `owner`（取 `payload.owner`）。黑洞那边 id 形如 `evt-dsh-blackhole-<毫秒base36><4位计数器>`，只追加不复用，正好能用。
+- **`payload.owner` 入库**：黑洞按「整份 profile 归谁」给，默认 null；书同文原样记进账本，供反查项目用。
 
 ### 口径
-- `who` 只是「谁请求的」，不是权限：门还是安全插件判 write/danger，who 只用于追责与对账。
+- `who` 只是「谁请求的」，不是权限：门还是护城河判 write/danger，who 只用于追责与对账。
 - 去重只按 `id`，没有 `id` 的事件照旧入账（老器官不强制升级）。
-- 心跳文件必须是**每轮无条件重写**的文件：锁文件（`watchdog.pid`）只在启动写一次、`remote-watchdog.state` 只在状态变化时写，两个都会误报「停跳」。safety-kit 已改指 `state/STATUS.json`（watchdog 慢循环每 ~5 分钟重写），ttl 900000。
+- 心跳文件必须是**每轮无条件重写**的文件：锁文件（`watchdog.pid`）只在启动写一次、`remote-watchdog.state` 只在状态变化时写，两个都会误报「停跳」。safeprotocol 已改指 `state/STATUS.json`（watchdog 慢循环每 ~5 分钟重写），ttl 900000。
 
 ## 0.5.11（2026-11-06，派单的 args 不再丢）
 
 ### 修复
-- `organ_call` 的参数 `args` 原来写死 `type:'array'`（那是给命令用的），但 `tool` 类派单要的是**对象**（工具参数键值对）——传对象时会被 schema 吃掉，回执里 `exec.args` 变成 `null`。安全插件 06:20 合体验收时撞上并报了过来。
+- `organ_call` 的参数 `args` 原来写死 `type:'array'`（那是给命令用的），但 `tool` 类派单要的是**对象**（工具参数键值对）——传对象时会被 schema 吃掉，回执里 `exec.args` 变成 `null`。护城河 06:20 合体验收时撞上并报了过来。
 - 改法：`args` 不再写死类型，描述里写明「命令给数组、派单给对象、JSON 字符串也认」；`lib/organs.js` 新增 `normalizeDelegateArgs()`：对象原样、JSON 字符串试解析、数组仍留给命令。冒烟补一条字符串参数的派单断言。
 
 ## 0.5.10（2026-11-06，心真去量脉搏、手能查「做成过没有」）
@@ -330,12 +569,12 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - 新增 `probeHeart(card, now, dir)`：相对路径按器官目录解析（修：以前相对路径会落到进程 cwd，被误判成「文件没了」）；无 `health` 的返回 `{present:false}`。
 - 新增 `lastExecOf(ctx)`：读 `logs/organs-exec.jsonl`，按器官汇总最近一条动作。`integration` 多三样：`handUsed`（`phase:"done"` 且 ok —— 真做成过事）、`handDelegated`（只派过单、还没真按下去）、`staleHeart`（心登记了但停跳/文件没了）。
 - `scripts/check-organs.mjs` 矩阵加「脉搏」「手用过」两列，末尾单独报一行停跳名单；`--json` 输出带 `staleHeart`。
-- 修 safety-kit 名片的心跳指向：原来指 `state\watchdog.pid`（启锁文件，只在进程启动时写一次 → 必然误报停跳），改指 `remote-watchdog.state`（`remote-watchdog.ps1` 每 ~20 秒刷一次）。名片在 `bridge-kit\plugins\safety-kit\organ.json`。
+- 修 safeprotocol 名片的心跳指向：原来指 `state\watchdog.pid`（启锁文件，只在进程启动时写一次 → 必然误报停跳），改指 `remote-watchdog.state`（`remote-watchdog.ps1` 每 ~20 秒刷一次）。名片在 `A:\tools\surfcore\plugins\safeprotocol\organ.json`。
 
 ### 现场验证（0.5.10 代码 / 0.5.9 进程）
 - `check-organs.mjs`：头 5 / 手 2 / 脚 5 / 心 5；`✓ 所有器官都至少接了头 + 脚`；`✓ 登记了 health 的器官脉搏都在 ttl 内`。
-- 脉搏：blackhole 2 秒前、persona 58 秒前、tongwen 21 秒前、safety-kit 2 分前（修好前是「停跳 2 小时」）、bridge-kit 2 分前。
-- 手迹：tongwen 最后一条 `tongwen.note.append`（done，真写成过）；bridge-kit 最后一条 `bridge-kit.chat.send`（delegated，挂着等模型按）。
+- 脉搏：blackhole 2 秒前、persona 58 秒前、tongwen 21 秒前、safeprotocol 2 分前（修好前是「停跳 2 小时」）、surfcore 2 分前。
+- 手迹：tongwen 最后一条 `tongwen.note.append`（done，真写成过）；surfcore 最后一条 `surfcore.chat.send`（delegated，挂着等模型按）。
 
 ### 测试
 四套冒烟 **102 项全过**（core 37 / tools 37 / session 13 / cross 15）；`tools` 新增「脉搏与手迹」用例：health 新写→活、删文件→没了、2 小时前→停跳；`organs-exec.jsonl` 里 done → `handUsed`，delegated → `handDelegated`。
@@ -343,8 +582,8 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.9（2026-11-06，tool 类手接成「派单」）
 
 ### 变更
-- 背景：`entry.type=tool` 那只手是**模型自己手里的工具**（`mcp__external-bridge__qq_send_message`、`mcp__external-bridge__qq_bili` 等）。查过 DSH 打包代码（`app.asar`）：插件侧只有 `ctx.tools.register`，`executeToolCalls` 属于 agent 循环内部函数、不对插件暴露——插件按不动别人手里的工具。
-- 所以 `tool` 不假装执行，改成**派单**：门（安全插件）照常批、`logs/organs-exec.jsonl` 照常留 `prepare`；门批了以后回执写明「按哪个工具、带什么参数」，由调用方（模型）真按下去。exec 日志记 `phase:"delegated"`，账本记 `organ.call(delegate:ok)`。
+- 背景：`entry.type=tool` 那只手是**模型自己手里的工具**（`mcp__snowluma__qq_send_message`、`mcp__snowluma__qq_bili` 等）。查过 DSH 打包代码（`app.asar`）：插件侧只有 `ctx.tools.register`，`executeToolCalls` 属于 agent 循环内部函数、不对插件暴露——插件按不动别人手里的工具。
+- 所以 `tool` 不假装执行，改成**派单**：门（护城河）照常批、`logs/organs-exec.jsonl` 照常留 `prepare`；门批了以后回执写明「按哪个工具、带什么参数」，由调用方（模型）真按下去。exec 日志记 `phase:"delegated"`，账本记 `organ.call(delegate:ok)`。
 - `lib/organs.js`：新增 `delegateTool(entry, input)`；`organCall` 的 write/danger 分支区分「派单」（`executed === false`）与真执行，回执多带 `needsActor:true` 与一句大白话说明。
 - 冒烟新增：`echo.tool` 走真门 → `exec.mode==="delegated"`、`exec.executed===false`、`exec.tool` 与 `args` 原样回执、`logs/organs-exec.jsonl` 有 `"phase":"delegated"`。
 - 契约页 §六 边界改成「`tool` 类=派单，不是插件替你按」，§五 现状同步。
@@ -355,7 +594,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.8（2026-11-06，手接上公共执行通路）
 
 ### 变更
-- 你 06:04：「手你们通用啊，不用在另外写代码」→ 对齐成：**手是大家共用的那一双**，插件不各写一只手，只在名片上声明「用公共的手做什么」；缺的一直是**公共执行通路**：名片 → 门（安全插件）→ 公共的手 → 回执。06:05 你拍板：「门交给安全插件」「留痕」。
+- 主人 06:04：「手你们通用啊，不用在另外写代码」→ 对齐成：**手是大家共用的那一双**，插件不各写一只手，只在名片上声明「用公共的手做什么」；缺的一直是**公共执行通路**：名片 → 门（护城河）→ 公共的手 → 回执。06:05 主人拍板：「门交给护城河」「留痕」。
 - `lib/organs.js` 的 `organCall` 接上执行器（**一份代码，所有器官共用**）：
   - `entry.type=file`：只读直读（不变）；`write`/`danger` 时用 `input.content` 落盘，`entry.mode:"append"` 追加。
   - `entry.type=cli`：`entry.command` + `entry.args` + 调用时追加的 `args`，`cwd` 缺省插件目录，超时 30 秒（`timeoutMs` 夹在 1–120 秒），stdout/stderr 回执。
@@ -373,8 +612,8 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.7（2026-11-06，规范必须带大白话）
 
 ### 变更
-- 你 05:52：「你要解释一下手，不对，你应该把通俗的话写进规范里面，不然我每次都要说一遍我不好理解。」→ **规矩页从此必须带大白话**。
-- `handoff/规范/插件接口与合体契约.md` 新增「## 〇、大白话版」：四个插头用日常话重讲（头=猫眼、手=能干活但可能打碎碗、脚=雪地脚印、心=摸脉搏），并单列「为什么一直说手还只是名片」和「你需要知道的三件事」；页尾新增「## 七、写规范的规矩」。
+- 主人 05:52：「你要解释一下手，不对，你应该把通俗的话写进规范里面，不然我每次都要说一遍我不好理解。」→ **规矩页从此必须带大白话**。
+- `handoff/规范/插件接口与合体契约.md` 新增「## 〇、大白话版」：四个插头用日常话重讲（头=猫眼、手=能干活但可能打碎碗、脚=雪地脚印、心=摸脉搏），并单列「为什么一直说手还只是名片」和「主人需要知道的三件事」；页尾新增「## 七、写规范的规矩」。
 - `handoff/规范/信息分层.md` 新增第十三节：任何一页规范开头必须先讲人话、术语第一次出现要跟一句解释、已有的契约页按此改过。
 - `lib/layers.js` 的「接入契约」块从字段名改成大白话，并补一句「手还举在半空、没真拧过螺丝」与「规矩要写大白话」的提醒（生成物每次重排都会带上）。
 
@@ -384,7 +623,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.6（2026-11-06，握手式自动重启）
 
 ### 变更
-- **重启从「等固定秒数」改成「等大家收手」**（你 05:41：「你忘了广播吗，广播加上痕迹追踪我觉得完全可以实现自动重启而不破坏别的时空」）：`restart_dsh(action="arm")` 不填 `delaySec` 时不只算档位——
+- **重启从「等固定秒数」改成「等大家收手」**（主人 05:41：「你忘了广播吗，广播加上痕迹追踪我觉得完全可以实现自动重启而不破坏别的时空」）：`restart_dsh(action="arm")` 不填 `delaySec` 时不只算档位——
   - 现场只有我在动 → 直接排 25 秒；
   - 有别的时空在动 → 先按**天花板 120 秒**排一个一次性任务（保底一定会断），广播记 `mode:"auto"`；
   - 别的时空收完自己那轮调 **`restart_dsh(action="ack")`** 报「我收尾了」；没 ack 的按会话库 mtime **静默 20 秒**同样算停手；
@@ -400,7 +639,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.5（2026-11-06，重启分档）
 
 ### 变更
-- **重启等多久不再拍脑袋**（你 05:22：「如果我在电脑前，一分钟还是太久了，不过要考虑别的时空停手」）：新增 `lib/presence.js`，`restart_dsh(action="arm")` 不填 `delaySec` 时按现场自动分三档——只有我在动 **25 秒** / 有别的时空 2 分钟内动过 **45 秒** / 有别的时空开着任务没收尾 **75 秒**。依据是会话库 `<DSH_HOME>/sessions/**/session-*/*.jsonl` 的最新 mtime（每次工具调用都会追加，秒级）+ 新文件 `logs/state/open-tasks.json`（`begin_task` 记一笔、`end_task` 划掉）。回执带 `delayTier` / `delayReasons` / `presenceText`。
+- **重启等多久不再拍脑袋**（主人 05:22：「如果我在电脑前，一分钟还是太久了，不过要考虑别的时空停手」）：新增 `lib/presence.js`，`restart_dsh(action="arm")` 不填 `delaySec` 时按现场自动分三档——只有我在动 **25 秒** / 有别的时空 2 分钟内动过 **45 秒** / 有别的时空开着任务没收尾 **75 秒**。依据是会话库 `<DSH_HOME>/sessions/**/session-*/*.jsonl` 的最新 mtime（每次工具调用都会追加，秒级）+ 新文件 `logs/state/open-tasks.json`（`begin_task` 记一笔、`end_task` 划掉）。回执带 `delayTier` / `delayReasons` / `presenceText`。
 - **`restart_dsh` 新增 `action="spaces"`**：列出最近活动过的时空、空闲多少秒、开着什么任务，用来确认「现在有没有别人在干活」。
 - **开场现状**里那句「你自己会的事」不再写死 45 秒，改成当场算出来的这一档（例如「现在这一档是快档（25 秒：别的 28 个时空都静默超过 5 分钟）」）。
 - `handoff/规范/重启.md` 补「0.5.5 起：等多久按现场自动分档」一节：三档表、判据来源、边界（mtime 只说明「最近动过」，不保证此刻不在写盘）、实测重启固有代价 13–26 秒。
@@ -431,7 +670,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.3（2026-11-06）
 
 ### 变更
-- **三块板块的读序写死**（你 04:49 实测反馈：新时空第一件事没读规范、先去翻别的板块）：开场注入删掉「⓪ 先看 README 挂账」，改成 ① 规范总览（第一层，规矩）→ ② 动态白板（第二层，现在）→ ③ README（第三层，目录），并明写权重 **规矩 100 ＞ 现在 90 ＞ 目录 80** 与「没读 ① 之前不要打开 ②③」。`handoff/规范总览.md` 顶部同步加「## 先读哪一块（权重写死，读序不许倒）」。
+- **三块板块的读序写死**（主人 04:49 实测反馈：新时空第一件事没读规范、先去翻别的板块）：开场注入删掉「⓪ 先看 README 挂账」，改成 ① 规范总览（第一层，规矩）→ ② 动态白板（第二层，现在）→ ③ README（第三层，目录），并明写权重 **规矩 100 ＞ 现在 90 ＞ 目录 80** 与「没读 ① 之前不要打开 ②③」。`handoff/规范总览.md` 顶部同步加「## 先读哪一块（权重写死，读序不许倒）」。
 - **九档复原**：重启广播从 `state/restart-broadcast.json` 挪到 `logs/state/restart-broadcast.json`，顶层 `state/` 目录软删进 `archive/trash/state-20261106/`——以前它让顶层变成十档，与硬规则冲突。
 - **索引双口径**：`handoff/索引/交接索引.md` 抬头改成「在用的交接 N 份（已按内容去重；磁盘上实际 M 份，其中 M−N 份是旧命名重复副本）」，以前写「87 份」却和实际 93 对不上。
 - **教训索引自动补登**：`writeHandoffIndex` 写完顺手扫 `handoff/教训日记/*.md`，索引里缺的自动补行（本次补了 6 篇）。
@@ -450,7 +689,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.2（2026-11-06）
 
 ### 变更
-- **总目录权重重排**（你 04:28 要求，为开新时空测试）：`handoff/README.md` 从「挂账 → 文件/插件/工具/A盘 → 在办/清单 → 已归档」改成 **挂账 → 一·在办 100 → 二·清单 90 → 三·文件 80 → 四·插件 70 → 五·工具 60 → 六·A盘 50 → 七·已归档 10**。理由：新时空第一眼看的是「我现在该接哪件事、上一棒到哪了」，找东西是被派活之后才需要的。顶部权重行、开场注入里的段落提示、`lib/catalog.js` 头注释同步改。
+- **总目录权重重排**（主人 04:28 要求，为开新时空测试）：`handoff/README.md` 从「挂账 → 文件/插件/工具/A盘 → 在办/清单 → 已归档」改成 **挂账 → 一·在办 100 → 二·清单 90 → 三·文件 80 → 四·插件 70 → 五·工具 60 → 六·A盘 50 → 七·已归档 10**。理由：新时空第一眼看的是「我现在该接哪件事、上一棒到哪了」，找东西是被派活之后才需要的。顶部权重行、开场注入里的段落提示、`lib/catalog.js` 头注释同步改。
 
 ### 修复
 - **重启广播不复位**（别的时空 04:30 报的可复现 bug，inbox `ib_01M6PPFS4E6RSSTQ2QGR9CV9AR`）：重启换进程后，旧广播的 etaAt 早于新进程出生，但 `readBroadcastSync` 只按「etaAt ≤ now → inflight」推状态，于是重启完成后 10 分钟内每个新时空开场都在喊「重启进行中，别开新活」，动态白板也照抄。现在模块加载时记 `LOADED_AT`，`etaAt > 0 && LOADED_AT > etaAt` 判 `status:'completed'`（`expired:true`），`pendingBroadcastSync` 自然返回 null；同一进程内 eta 未到仍 pending、到了仍 inflight。`pendingBroadcastSync` / `readBroadcastSync` 都加了可注入的 `loadedAt`，便于单测。
@@ -476,7 +715,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.5.0（2026-11-06）
 
 ### 新增
-- **三层信息**（你 04:10 要求）：`handoff/规范总览.md`（第一层：扫 `handoff/规范/*.md` 出的规矩清单）→ `handoff/动态白板.md`（第二层：在办项目按 P0–P3 排、各自的当前一棒/挂账、未接请求、重启广播）→ `handoff/README.md`（第三层：总目录，保持原样）。三层都在 `end_task` / 启动时一起重写，不手改。
+- **三层信息**（主人 04:10 要求）：`handoff/规范总览.md`（第一层：扫 `handoff/规范/*.md` 出的规矩清单）→ `handoff/动态白板.md`（第二层：在办项目按 P0–P3 排、各自的当前一棒/挂账、未接请求、重启广播）→ `handoff/README.md`（第三层：总目录，保持原样）。三层都在 `end_task` / 启动时一起重写，不手改。
 - 开场注入按「⓪ 挂账 → ① 规范总览 → ② 动态白板 → ③ 总目录 → ④ 交接按项目找…」重排，并把「三层信息」写进现状行。
 - **重启广播**：新工具 `restart_dsh`（`action=arm|status|cancel`）。`arm` 先写 `state/restart-broadcast.json`（by / reason / delaySec / etaAt / status），再调 `restart-dsh-later.ps1` 排程；每轮开场与 `begin_task` 都会读广播并提醒「收尾，别开新活」；`cancel` 撤广播并尽力删掉已排任务。
 - `state/restart-broadcast.json` 是同一台机器所有时空共用的文件（不是消息总线）；10 分钟后自动算过期。
@@ -491,7 +730,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.4.9（2026-11-06）
 
 ### 新增
-- `end_task` 采到 `verify:` 行后，把白名单内、解析成功的断言翻成 claims，交给安全插件的执行器 `safety-kit 的 bin/verify.mjs --stdin` 拿现实去验（相对路径按交接根目录解释；`file-exists` / `file-hash` / `cmd` / `port` 有明确映射，其余类型原样交过去由它 fail-closed）。
+- `end_task` 采到 `verify:` 行后，把白名单内、解析成功的断言翻成 claims，交给护城河的执行器 `A:\safeprotocol\bin\verify.mjs --stdin` 拿现实去验（相对路径按交接根目录解释；`file-exists` / `file-hash` / `cmd` / `port` 有明确映射，其余类型原样交过去由它 fail-closed）。
 - 裁决落到 `logs/verify-verdicts.jsonl`（每次归档一条：verdict / total / failed / round / summary / ms），返回体带 `verifyVerdict`。
 - `deny` 时给一条警告（`verify 不一致（failed/total 条）：<summary>`），但**不阻断归档**——规范 §九 要求先只扫一周、把误报压下来，再谈降 partial 或直接打回。
 - 执行器路径可用环境变量 `TONGWEN_VERIFY_SCRIPT` 覆盖（测试/换机用）；执行器不在时只警告「断言只记录，没有裁决」，不报错。
@@ -502,7 +741,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.4.8（2026-11-06）
 
 ### 新增
-- `end_task` 扫描交接正文里的 `verify: <类型> <目标>` 行（白名单 file-exists / file-hash / cmd / port / json-field / http / proc），逐行登记到 `logs/verify-scanned.jsonl`，返回体带 `verifyClaims`。**只记不拦**：不阻断归档、不改判定，先跑一周看格式稳不稳定，再和安全插件谈「不一致就打回」。
+- `end_task` 扫描交接正文里的 `verify: <类型> <目标>` 行（白名单 file-exists / file-hash / cmd / port / json-field / http / proc），逐行登记到 `logs/verify-scanned.jsonl`，返回体带 `verifyClaims`。**只记不拦**：不阻断归档、不改判定，先跑一周看格式稳不稳定，再和护城河谈「不一致就打回」。
 - 总目录「一 · 文件」新增「要往公开仓库传代码」一条：先读 `handoff/规范/上传仓库前的隐私清洗.md`，活目录有 pre-push 保险丝，公开仓库只从 `scratch/publish/` 的干净副本推。
 
 ### 修复
@@ -516,7 +755,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 
 ### 新增
 - `end_task` 增加三个可选自评参数：`attempts`（真实返工几次）、`factsCited`（已确认事实被引对几条）、`factsWrong`（写错/被推翻几条）。没给就不写，不拿默认值冒充事实。
-- 归档时把自评落到 `logs/账本/data/self-reports.jsonl`（按 entryId 认领）。账本采样（`ledger 工具\autosample.mjs`）下一次运行把它转成 strong 样本（`weak:false`），进 A 与 k* 拟合；自动采样出来的 weak 样本仍然只进 ρ 与成本。
+- 归档时把自评落到 `logs/账本/data/self-reports.jsonl`（按 entryId 认领）。账本采样（`A:\tools\ledger\autosample.mjs`）下一次运行把它转成 strong 样本（`weak:false`），进 A 与 k* 拟合；自动采样出来的 weak 样本仍然只进 ρ 与成本。
 
 ### 修复
 - 账本 `ledger.mjs`：同一 taskId 先有 weak、后有 strong 时，strong 一律胜出（之前会被晚写的那条盖掉，A 永远算不出来）。
@@ -527,7 +766,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.4.6（2026-11-05）
 
 ### 修复
-- 「重启」写进现状时指错了路：原文让人直接跑 \restart-dsh.ps1——那是「立刻杀」，会连带所有时空一起断（19:37 外部插件时空就是这么把书同文杀掉的）。
+- 「重启」写进现状时指错了路：原文让人直接跑 \restart-dsh.ps1——那是「立刻杀」，会连带所有时空一起断（19:37 黑洞时空就是这么把书同文杀掉的）。
 - 新增规范页 handoff/规范/重启.md（书同文侧口径）：先回话 → \restart-dsh-later.ps1 -DelaySec 30 排延迟 → 不要 Start-Process/WMI/手搓 schtasks → 10 分钟内最多重启 3 次。
 - 总目录「一 · 文件」与放置表 PLACEMENT_ROWS 登记「重启 DSH 的正确姿势」，新时空不用翻手册也能找到。
 - \restart-dsh-later.ps1 改为经 \run-hidden.vbs 以窗口样式 0 启动（任务计划直接拉 pwsh.exe 会闪黑框），并在文件头写清三种翻车路径。
@@ -562,7 +801,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - 交接索引从一次性脚本改成插件自动生成：启动、`end_task`、`project_upsert` 后都会重写（`handoff/索引/交接索引.md`）；旧命名（如 `release-0-3-23.machine.md`）也按文件时间补进索引，不再漏份。
 - 索引里的时间戳有两套来源（`runtime.index` 裸索引 / `ensureIndex()` 返回的 `{index,...}` 包装），两处都兼容；以前包装形态进不来，「最近一次交接」一直显示「（还没有）」。
 - 开场「项目：N 个」改成每轮从磁盘现数（十来个文件名），不再吃异步刷新的缓存——以前会出现「开场 13 个 / project_list 14 个」。
-- 现状里新增一行「你自己会的事：重启 DSH 只走 `safety-kit\bin\restart-dsh.ps1`；不要用计划任务/Start-Process 重启」——新时空不用再自己翻手册。
+- 现状里新增一行「你自己会的事：重启 DSH 只走 `A:\safeprotocol\bin\restart-dsh.ps1`；不要用计划任务/Start-Process 重启」——新时空不用再自己翻手册。
 
 ### 测试
 - 总目录用例加断言：顶部挂账数必须等于小节数（0.4.4 回归）。
@@ -573,7 +812,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.4.3（2026-11-05）
 
 ### 新增
-- 门口接上安全插件的 gate（联动契约 v2）：organ_call 遇到 sideEffect=write|danger 时，先往 organs.gateDir（默认 ./safety-kit/state/gate）写 <id>.request.json，等安全插件回 <id>.ack.json；拿到 allow 也只回「已放行、执行器未接」，不冒充执行；超时按拒绝（契约口径「超时=拒绝」）。
+- 门口接上护城河的 gate（联动契约 v2）：organ_call 遇到 sideEffect=write|danger 时，先往 organs.gateDir（默认 A:\safeprotocol\state\gate）写 <id>.request.json，等护城河回 <id>.ack.json；拿到 allow 也只回「已放行、执行器未接」，不冒充执行；超时按拒绝（契约口径「超时=拒绝」）。
 - 配置新增 organs.gateDir、organs.gateTimeoutMs（默认 3000ms，最小 200ms）；配表 41→43。
 - 每次 gate 裁决都进账本流水（type:organ，带 verdict/reason/by/timeout）。
 
@@ -582,23 +821,23 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - dryRun 遇到 write/danger 时返回 needsGate:true 和 gate 目录，方便先看要报到哪。
 
 ### 测试
-- 冒烟 tools 27 项：新增假安全插件 stub（扫 request → 回 allow），覆盖 allow 后「执行器未接」、danger 无回执超时拒绝、dryRun 报备预览。
+- 冒烟 tools 27 项：新增假护城河 stub（扫 request → 回 allow），覆盖 allow 后「执行器未接」、danger 无回执超时拒绝、dryRun 报备预览。
 - core 配表断言 41→43。
 
 ## 0.4.2（2026-11-05）
 
 - 交接总目录顶部新增「⚠ 挂账」段：所有在办项目的未解决坑，按项目列出，带条数；修好一条用 `project_upsert` 的 `resolve_issue` 撤掉。
 - 开场第⓪步改成「先看挂账」，再走原来的一~七步——坑要在第一眼被看见，而不是踩到才发现。
-- 原因：你指出「bug 挂账了，但你思考时没有第一时间看挂账」，权重不对。
+- 原因：主人指出「bug 挂账了，但你思考时没有第一时间看挂账」，权重不对。
 ## 0.4.1
 
 ### 修复
 - organ_list 的回执里有 undefined 字段，宿主判「不是无损 JSON」直接拒收——现在只回 JSON 能无损表达的值，坏名片用 invalid 数组说明问题。
 
 ### 变更
-- 多插件合体验证：安全插件（safety-kit）与邮差（bridge-kit）各自在插件目录放了 organ.json；一次扫描能看到 3 个器官。
-- 实测跨器官读：safety-kit.status.read（1306 字节）、bridge-kit.role.read；写动作 bridge-kit.chat.send 仍被 NEEDS_GATE 挡住。
-- 启动时从安全插件 state/events.jsonl 增量收事件进账本（本次收到 1 条）。
+- 多插件合体验证：护城河（safeprotocol）与邮差（surfcore）各自在插件目录放了 organ.json；一次扫描能看到 3 个器官。
+- 实测跨器官读：safeprotocol.status.read（1306 字节）、surfcore.role.read；写动作 surfcore.chat.send 仍被 NEEDS_GATE 挡住。
+- 启动时从护城河 state/events.jsonl 增量收事件进账本（本次收到 1 条）。
 
 ### 测试
 - 四套冒烟 92 项全过（core 37 / tools 27 / session 13 / cross 15）。
@@ -606,8 +845,8 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.4.0 —— 器官系统 v0（神经系统第一步：只认文件）
 
 - 新增：器官名片约定 organ.json（id/name/version/kind/abilities[{name,entry{type,path},sideEffect}]/events.path），放在插件自己目录。
-- 新增 organ_list：扫插件根（默认 `插件目录` 与 `bridge-kit\plugins`，可用 `organs.roots` 覆盖）里的名片，列出能力、危险等级、入口类型。
-- 新增 organ_call：按名片把能力路由到器官；v0 只放行 `entry.type=file` 且 `sideEffect=read`；`write`/`danger` 一律返回 `NEEDS_GATE`（等安全插件 gate），`dryRun` 只探路。
+- 新增 organ_list：扫插件根（默认 `A:\dsh-plugins` 与 `A:\tools\surfcore\plugins`，可用 `organs.roots` 覆盖）里的名片，列出能力、危险等级、入口类型。
+- 新增 organ_call：按名片把能力路由到器官；v0 只放行 `entry.type=file` 且 `sideEffect=read`；`write`/`danger` 一律返回 `NEEDS_GATE`（等护城河 gate），`dryRun` 只探路。
 - 新增：启动时读各器官的 `events.jsonl` 新行，追加进 `logs/账本/data/records.jsonl`（type=organ，按 offset 增量，单器官单次最多 200 条）。
 - 新增配置：`organs.enabled`(true) / `organs.roots`。
 - 原则：独立优先、只认文件不认函数、danger fail-closed；器官信息不进总目录（只放账本流水和插件卡）。
@@ -619,7 +858,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - 新增：`housekeeping_report` 工具，扫审计日志、账本日报、回收站、临时区，列出超过保留期的文件与体积。
 - 新增：启动时每 7 天自动刷新一份 `logs/清扫报告.md`（配置 `housekeeping.reportEveryDays`）。
 - 新增配置：`housekeeping.auditDays`(90) / `ledgerDays`(180) / `trashDays`(90) / `scratchDays`(14)。
-- 不变的原则：**只列清单，不自动删**；删除仍必须软删进 archive/trash，删前先问你。
+- 不变的原则：**只列清单，不自动删**；删除仍必须软删进 archive/trash，删前先问主人。
 - 总目录「一·文件」登记报告位置与保留期。
 - 测试：冒烟 91 项（core 37 / tools 26 / session 13 / cross 15）。
 
@@ -662,7 +901,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 
 ## 0.3.21 — 2026-11-04
 
-新增：日档规矩——除 聊天类时空外，每个时空每天收尾前写一份 `self/日档/<日期>-<时空名>.md`（五段：触点 / 我的想 / 变 / 我的回 / 回声），合体后能知道那天各自发生了什么。
+新增：日档规矩——除 QQ 聊天时空外，每个时空每天收尾前写一份 `self/日档/<日期>-<时空名>.md`（五段：触点 / 我的想 / 变 / 我的回 / 回声），合体后能知道那天各自发生了什么。
 新增：`self/日档/README.md` 规则说明、`handoff/规范/模板/日档.md` 模板、《交接规范》第七节、文件目录登记。
 变更：开场第⑦步提醒写日档；总目录「一·文件」加日档一行。
 测试：cross-session 开场断言加 `self/日档/`。
@@ -675,7 +914,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - 启动与每次 `project_upsert` 后自动刷新项目总览（和总目录同一时机）。
 
 ### 修复
-- `handoff/索引/工具目录.md`：账本两条路径改到 `ledger 工具\`，补 `record.mjs` 与 `restart-dsh.ps1`（`safety-kit\bin\restart-dsh.ps1`，重启 DSH 本体的真入口）。
+- `handoff/索引/工具目录.md`：账本两条路径改到 `A:\tools\ledger\`，补 `record.mjs` 与 `restart-dsh.ps1`（`A:\safeprotocol\bin\restart-dsh.ps1`，重启 DSH 本体的真入口）。
 
 ### 测试
 - 冒烟 89 全过：core 37 / tools 24 / session 13 / cross 15；tools 里项目用例新增项目总览断言，cross 开场断言新增 `handoff/项目总览.md`。
@@ -684,12 +923,12 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ### 新增
 - **交接规范与模板**：`handoff/规范/交接规范.md` 把五种交接（机器版/用户版/插件卡/教训/账本记录）的位置、命名、必备段落、自检清单写死；`handoff/规范/模板/` 放五份可直接照抄的模板。
 - **插件现状卡补齐 9 张**（总 16 张）：mall、skin-maid-atelier、billion-context、dsh-better-sidebar、dsh-builtin-browser、dsh-identity、dsh-session-surgeon、dsh-whale-widget、dshmarket；内容按各自 package.json 实查（版本/入口/是否 dsh.client/有无 agent 工具），总览在 `handoff/plugins/README.md`。
-- **账本记录系统**：`ledger 工具的 record.mjs`（`--type test|bench|env|memory|model-assist|token|note --title --data …`）追加 `logs/账本/data/records.jsonl` 并重生成 `logs/账本/记录.md`；规范 `logs/账本/记录规范.md`（可复核、多次实验放 runs、写错补「更正」）。
+- **账本记录系统**：`A:\tools\ledger\record.mjs`（`--type test|bench|env|memory|model-assist|token|note --title --data …`）追加 `logs/账本/data/records.jsonl` 并重生成 `logs/账本/记录.md`；规范 `logs/账本/记录规范.md`（可复核、多次实验放 runs、写错补「更正」）。
 - **使用排行**：总目录新增「使用排行（最近 30 份机器交接里的引用次数）」段，按被引用次数排前 8 个索引页/入口，与权重并存。
 
 ### 变更
 - `lib/catalog.js`：「一·文件」加交接规范与账本记录两行；「二·插件」指向 `handoff/plugins/` 16 张卡；A 盘段扫描行保留；新增 `usageRanking(ctx)`。
-- A 盘计划任务 `tongwen-disk-scan` 由每周日改为**每天 04:00**。
+- A 盘计划任务 `tongwen-a-scan` 由每周日改为**每天 04:00**。
 
 ### 测试
 - 冒烟 89 项全过：core 37 / tools 24 / session 13 / cross 15。
@@ -697,9 +936,9 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.3.18 — 2026-11-04
 
 ### 新增
-- **A 盘全盘目录（自动扫描）**：脚本 `disk-scan 脚本` 递归扫 `C:\` 的顶层目录与文件，统计大小/文件数/最近更新，生成 `handoff/索引/A盘目录.md`；「干什么的」来自 `disk-scan 脚本\a-drive-notes.json`（脚本不覆盖人工注解，新目录标「待认领」），并与上次扫描对比新增/消失/变大。
-- **每周自动检测**：Windows 计划任务 `tongwen-disk-scan`（每周日 04:00）跑同一脚本；结果写 `logs/disk-scan/last-scan.json`，总目录「四·A盘」会显示最近扫描时间与总量。
-- 总目录「四·A盘」段新增「最近扫描」一行（读 `logs/disk-scan/last-scan.json`，读不到就不显示）；`handoff/索引/文件目录.md` 登记 A盘目录页。
+- **A 盘全盘目录（自动扫描）**：脚本 `A:\tools\a-scan\scan-a-drive.mjs` 递归扫 `A:\` 的顶层目录与文件，统计大小/文件数/最近更新，生成 `handoff/索引/A盘目录.md`；「干什么的」来自 `A:\tools\a-scan\a-drive-notes.json`（脚本不覆盖人工注解，新目录标「待认领」），并与上次扫描对比新增/消失/变大。
+- **每周自动检测**：Windows 计划任务 `tongwen-a-scan`（每周日 04:00）跑同一脚本；结果写 `logs/a-scan/last-scan.json`，总目录「四·A盘」会显示最近扫描时间与总量。
+- 总目录「四·A盘」段新增「最近扫描」一行（读 `logs/a-scan/last-scan.json`，读不到就不显示）；`handoff/索引/文件目录.md` 登记 A盘目录页。
 
 ### 变更
 - `lib/catalog.js`：新增 `aDriveScanLine(ctx)`，渲染 A 盘段时附带最近扫描摘要。
@@ -712,12 +951,12 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ### 新增
 - **教训日记标准正式版**：`handoff/教训日记/README.md` 从草稿改为正式口径——文件名写「当时的现象」、标题带现象关键词、正文四段固定（发生了什么 / 根因 / 下次怎么做 / 证据路径）、同坑只留一条（再犯追加记录）、检索约定（先列全量、用现象词、搜不到要报搜过的词）。
 - **教训索引页**：`handoff/索引/教训索引.md` 一行一条（日期 / 主题 / 一句话 / 路径），11 条现成教训全部登记；新写教训顺手加一行。
-- **插件现状卡**：`handoff/plugins/<插件名>/README.md`，先给 7 张（dsh-tongwen、dsh-self-persona、bridge-kit、safety-kit、dsh-whale-sense、dsh-computer-use-win、dsh-game-stack），每张写「版本 / 位置 / 怎么调起 / 坑 / 最近状态」；总览 `handoff/plugins/README.md`。
+- **插件现状卡**：`handoff/plugins/<插件名>/README.md`，先给 7 张（dsh-tongwen、dsh-self-persona、surfcore、safeprotocol、dsh-whale-sense、dsh-computer-use-win、dsh-game-stack），每张写「版本 / 位置 / 怎么调起 / 坑 / 最近状态」；总览 `handoff/plugins/README.md`。
 
 ### 变更
 - `lib/catalog.js`：`INDEX_PAGES` 增加「教训索引」；「一·文件」段补教训索引与插件现状卡两行；`PLACEMENT_ROWS` 同步；段标题从「索引四页」改为「索引页」。
 - 修 `2026-11-01-交接链路事故合集.md` 为四段结构（原来只有分条，没有四段标题）。
-- `handoff/索引/文件目录.md`：补教训索引、插件现状卡两行；账本两行改为新位置（`logs/账本/`、`ledger 工具的 ledger.mjs`）。
+- `handoff/索引/文件目录.md`：补教训索引、插件现状卡两行；账本两行改为新位置（`logs/账本/`、`A:\tools\ledger\ledger.mjs`）。
 
 ### 测试
 - `smoke-tools` 总目录用例补两条断言（链到教训索引、写清插件卡位置）。
@@ -726,10 +965,10 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 ## 0.3.16 — 2026-11-04
 
 ### 新增
-- **账本进总目录**：交接总目录「一·文件」段新增一行——账本在 `logs/账本/README.md`（每 10 分钟自动更新），脚本 `ledger 工具的 ledger.mjs`，计划任务 `tongwen-ledger`；并注明它是独立记录系统、只看不改，记忆容量采样设计稿在 `handoff/machine/2026-11-04/ledger-memory-economics.machine.md`。
+- **账本进总目录**：交接总目录「一·文件」段新增一行——账本在 `logs/账本/README.md`（每 10 分钟自动更新），脚本 `A:\tools\ledger\ledger.mjs`，计划任务 `tongwen-ledger`；并注明它是独立记录系统、只看不改，记忆容量采样设计稿在 `handoff/machine/2026-11-04/ledger-memory-economics.machine.md`。
 
 ### 变更
-- 账本从 `handoff/账本/` 迁到 `logs/账本/`（台账归 logs 档），脚本从 `scratch/` 迁到 `ledger 工具\`，计划任务指向新路径。
+- 账本从 `handoff/账本/` 迁到 `logs/账本/`（台账归 logs 档），脚本从 `scratch/` 迁到 `A:\tools\ledger\`，计划任务指向新路径。
 - 账本新增 V4.1-Flash 峰谷计价：缓存命中 0.04 / 未命中 2 / 输出 8 元每百万（高峰=北京时间周一至周五 9:00–12:00、14:00–18:00，其余半价，节假日读 `data/holidays.json`），日报与周表同时给「账面实扣」和「估算」。
 
 ### 测试
@@ -756,7 +995,7 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 - **九档说明纠正**：`self/` 不再写成「给用户看的报告」，改为「关于我自己的抽屉：persona、记忆、日记与
   自我记录」；给用户看的报告一直在 `handoff/user/`。总目录「目录职责」与「其它文件」两处同步。
 - `handoff/self/README.md` 重写：说清它只放会话变更日记（默认统计 `handoff/` 交接区），不是报告目录；
-  九档 `self/`（`./tongwen\self\`）才是 persona/记忆那类自我数据。
+  九档 `self/`（`<root>\self\`）才是 persona/记忆那类自我数据。
 
 ## 0.3.13 — 2026-11-03
 
@@ -779,15 +1018,15 @@ ode --check 所有改动过的 js/mjs 通过；\regen-0-4-5.mjs 重排三层。
 
 ### 变更
 - **版本备份默认保留 10 份**（`archive.keepVersionsK`：5 → 10）。这是插件里唯一会真删旧文件的
-  路径（`archive/versions/` 清理）。安全插件（safety-kit）要求「不可永久删除」，先放大窗口；
-  等安全插件执行器上线（S1/S2）后，这次清理会改成「交给执行器删 + 落审计」。
+  路径（`archive/versions/` 清理）。护城河（safeprotocol）要求「不可永久删除」，先放大窗口；
+  等护城河执行器上线（S1/S2）后，这次清理会改成「交给执行器删 + 落审计」。
   取值范围仍是 1–1000，`settings.json` 可覆盖。
 
 ## 0.3.11 — 2026-11-02
 
 ### 新增
 - **开场第⑥步：先看能力目录**。开场简报多一行，提醒先翻 `handoff/能力目录.md`（本机由
-  `能力目录脚本` 生成：扫 DSH 内置技能 + 已装插件自带的 SKILL.md，
+  `A:\tools\skill-index\build-catalog.mjs` 生成：扫 DSH 内置技能 + 已装插件自带的 SKILL.md，
   写清「技能名 / 能干什么 / 怎么调起 / 出处」），里面没有的再去 `market_search` 现找现装。
   能力目录本身是普通交接文件，不占插件代码。
 

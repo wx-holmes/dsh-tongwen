@@ -65,6 +65,8 @@ import {
   inboxList,
   inboxClose,
   focusContext,
+  spaceList,
+  spaceRegister,
   organList,
   organCall,
 } from './lib/tools.js'
@@ -347,7 +349,7 @@ const TOOL_SPECS = [
   {
     name: 'housekeeping_report',
     description:
-      '生成或重看「过期文件清扫报告」：列出超过保留期的审计日志、账本日报、回收站、临时区文件；只报告不删除，删要你点头。',
+      '生成或重看「过期文件清扫报告」：列出超过保留期的审计日志、账本日报、回收站、临时区文件；只报告不删除，删要主人点头。',
     parameters: {
       force: { type: 'boolean', description: '忽略每周节流，立刻重扫一份。' },
     },
@@ -420,6 +422,7 @@ const TOOL_SPECS = [
     description: '看信箱里的请求，可按「发给我的」「某个项目」「未处理/已完成」筛选。',
     parameters: {
       mine: { type: 'boolean', description: '只看发给本会话的（含广播）' },
+      to: { type: 'string', description: '只看某个收件人的（认 dsh://session/<id> 与裸 id，地址会先归一）' },
       project: { type: 'string', description: '只看某个项目的' },
       status: { type: 'string', description: '按状态筛', enum: ['open', 'done'] },
       limit: { type: 'integer', description: '最多返回几条' },
@@ -438,6 +441,29 @@ const TOOL_SPECS = [
     execute: focusContext,
   },
   {
+    name: 'space_list',
+    description:
+      '时空地址簿（0.5.32）：现在有哪些时空活着、各自住哪个工作区、最后一次活动多久前、可能在管哪个项目。地址有两种——`dsh://session/<sessionId>` 投递用这个，`dsh://workspace/<workspaceId>` 指桌面/工作区。事实全来自磁盘：workspace.json 是归属权威表，会话文件的 mtime 判 active / idle / stale。给 address 就查单条（也认 session id 和 8 位短句柄）。虫洞投递前先查这里，别猜 id。',
+    parameters: {
+      status: { type: 'string', description: '只看某状态', enum: ['active', 'idle', 'stale', 'archived'] },
+      project: { type: 'string', description: '只看白板里提到过的某个项目' },
+      address: { type: 'string', description: '查单条：dsh://session/<id>、session id 或 8 位短句柄' },
+      task: { type: 'string', description: '按任务找该找谁：谁的白板跟这件事对得上，地址排前面（0.5.33）；分数只看项目标题/目标的字面命中 + 状态 + 新鲜度，可审计；默认不列自己' },
+      includeSelf: { type: 'boolean', description: '按任务查时也把自己列进来（默认 false）' },
+      includeArchived: { type: 'boolean', description: '按任务查时把已归档时空也列出来（默认 false：它还能收信但不会回话）' },
+      limit: { type: 'integer', description: '最多返回几条，默认 40' },
+    },
+    execute: spaceList,
+  },
+  {
+    name: 'space_register',
+    description:
+      '登记时空（0.5.34）：给「现在正在说话的这个时空」起个名字，写进 handoff/时空名册.md。**不用你抄会话 id**——地址由工具自己从运行时取，抄写错误在这个工具里不存在。名字写短（如「护城河」「意识」「黑洞」），一次就够，重名会追加新行、以最后一行为准。',
+    parameters: {
+      name: { type: 'string', description: '这个时空的名字（短、可辨认，如 护城河 / 意识 / 黑洞）', required: true },
+    },
+    execute: spaceRegister,
+  },  {
     name: 'inbox_close',
     description: '关掉一条请求（追加一条 close 事件，不修改已有行）。可以带一个结果交接的路径。',
     parameters: {
@@ -456,13 +482,13 @@ const TOOL_SPECS = [
   {
     name: 'organ_call',
     description:
-      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过安全插件的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。0.5.25 起双向调用带防回环：chain 最多 3 跳、同一能力不许出现两次；replyTo 按事件 id 去重（同一件事只回一次），每次调用都会在我们的 events.jsonl 留一行 organ.call，回执再留 organ.call.reply。',
+      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过护城河的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。0.5.25 起双向调用带防回环：chain 最多 3 跳、同一能力不许出现两次；replyTo 按事件 id 去重（同一件事只回一次），每次调用都会在我们的 events.jsonl 留一行 organ.call，回执再留 organ.call.reply。',
     parameters: {
       ability: { type: 'string', description: '能力名，例如 chat.send', required: true },
       dryRun: { type: 'boolean', description: '只探路：返回文件是否存在/多大、会走哪道门，不返回内容也不动手' },
       content: { type: 'string', description: '会写东西的能力要用它：写文件的内容，或 http 的请求体' },
       args: {
-        // 0.5.11：不写死 type——命令要数组、派单要对象，写死一种会把另一种吃掉（安全插件 06:20 报的 args=null 就是这个）
+        // 0.5.11：不写死 type——命令要数组、派单要对象，写死一种会把另一种吃掉（护城河 06:20 报的 args=null 就是这个）
         description:
           '参数：跑命令时给数组（接在名片 entry.args 后面，如 ["--n","6"]）；派单给工具时给对象（键值对，会原样抄进回执）。给 JSON 字符串也认。',
       },
@@ -484,7 +510,7 @@ const TOOL_SPECS = [
   {
     name: 'restart_dsh',
     description:
-      '重启 DSH 的唯一推荐入口（0.5.0 广播，0.5.6 握手式自动收尾，0.5.13 只认硬证据）：先广播、再排程。action=arm 把「全时空重启」写进广播（logs/state/restart-broadcast.json），每个时空下一轮开场都能看到并收尾。**不填 delaySec 就走握手模式**：先按天花板 90 秒排一个一次性任务；别的时空收完自己那轮调 action="ack" 报「我收尾了」；本插件每 3 秒检查一次，**只有拿到硬证据才提前**——要么别的时空全 ack，要么没有任何未完成的 open-task 且没人在写，才撤掉天花板改排 25 秒（最晚 90 秒无论如何断）。**沉默不算证据**：0.5.13 起删掉了「静默 20 秒算停手」那条——干活中的时空跑一条三十秒的命令，从外面看就是静默，06:47 就这样把安全插件杀了。填了 delaySec 就是老行为（固定等）。arm 之前先回用户一句「马上重启」——排程后本回合可能被切断。action=ack 是「我收尾了」的握手回执；action=status 看广播 + 还差谁；action=spaces 看在场的时空；action=cancel 撤销广播并尝试删掉已排的任务（未必成功，会如实说）。',
+      '重启 DSH 的唯一推荐入口（0.5.0 广播，0.5.6 握手式自动收尾，0.5.13 只认硬证据）：先广播、再排程。action=arm 把「全时空重启」写进广播（logs/state/restart-broadcast.json），每个时空下一轮开场都能看到并收尾。**不填 delaySec 就走握手模式**：先按天花板 90 秒排一个一次性任务；别的时空收完自己那轮调 action="ack" 报「我收尾了」；本插件每 3 秒检查一次，**只有拿到硬证据才提前**——要么别的时空全 ack，要么没有任何未完成的 open-task 且没人在写，才撤掉天花板改排 25 秒（最晚 90 秒无论如何断）。**沉默不算证据**：0.5.13 起删掉了「静默 20 秒算停手」那条——干活中的时空跑一条三十秒的命令，从外面看就是静默，06:47 就这样把护城河杀了。填了 delaySec 就是老行为（固定等）。arm 之前先回用户一句「马上重启」——排程后本回合可能被切断。action=ack 是「我收尾了」的握手回执；action=status 看广播 + 还差谁；action=spaces 看在场的时空；action=cancel 撤销广播并尝试删掉已排的任务（未必成功，会如实说）。',
     parameters: {
       action: {
         type: 'string',
@@ -596,7 +622,7 @@ const TOOL_SPECS = [
       const autoText =
         mode === 'auto'
           ? delaySec === AUTO_EARLY_SEC
-            ? `握手模式：现场只有我在动，直接排 ${delaySec} 秒`
+            ? `握手模式：别的时空都静默、我也停了，直接排 ${delaySec} 秒`
             : `握手模式：先按天花板 ${AUTO_CEILING_SEC} 秒排着；只有拿到硬证据（别的时空全 ack，或没人挂着任务也没人在写）才提前到 ${AUTO_EARLY_SEC} 秒`
           : '固定延迟模式'
       if (args?.dryRun) {
@@ -669,7 +695,7 @@ export function apply(ctx, rawConfig) {
   /**
    * 确保目录存在。
    *
-   * 不能无脑 mkdir：Windows 上对盘根（`C:\`）调 mkdir recursive 会报 EPERM，
+   * 不能无脑 mkdir：Windows 上对盘根（`A:\`）调 mkdir recursive 会报 EPERM，
    * 于是一个本来就存在的盘根被当成「建不出来」，插件白白降级到 C 盘。
    * 先 stat，只有确实不存在才建。
    */
@@ -810,7 +836,7 @@ export function apply(ctx, rawConfig) {
    * @param {(runtime: object, args: object) => Promise<object>} fn
    */
   function wrap(fn) {
-    return async (args) => {
+    return async (args, exec) => {
       let runtime
       try {
         runtime = await ensureRuntime()
@@ -832,6 +858,12 @@ export function apply(ctx, rawConfig) {
           message: `插件未能正常启动：${runtime.startup?.notes?.join('；') ?? '未知原因'}`,
         })
       }
+      // 0.5.37：execute(args, exec) 的 exec.agent.id 才是**调用方**；runtime.sessionId 是插件加载时的那个时空。
+      // 不能浅拷贝 runtime——任务状态写在它身上，拷贝会让 begin_task/end_task 对不上。改成临时覆写 + finally 还原。
+      const callSessionId = exec?.agent?.id ? String(exec.agent.id) : null
+      const prevSessionId = runtime.sessionId
+      runtime.callSessionId = callSessionId
+      if (callSessionId && callSessionId !== prevSessionId) runtime.sessionId = callSessionId
       runtime.degradedLevel = state.degradedLevel
       try {
         const result = await fn(runtime, args ?? {})
@@ -840,6 +872,9 @@ export function apply(ctx, rawConfig) {
         return result
       } catch (error) {
         return failure(runtime, error)
+      } finally {
+        runtime.callSessionId = null
+        if (callSessionId && callSessionId !== prevSessionId) runtime.sessionId = prevSessionId
       }
     }
   }
@@ -866,7 +901,9 @@ export function apply(ctx, rawConfig) {
   }
 
   // ---- 系统级注入（§12）：不作普通 user 消息 ----
-  const buildPrimer = (runtime) => {
+  const buildPrimer = (runtime, agentSessionId = null) => {
+    // 0.5.38：拿不到发起者就是 null——**不许退回插件加载时那个会话**（那会印出别人的地址）。
+    const selfAddressId = agentSessionId || null
     if (!runtime) return '【书同文车同轨】插件初始化中…'
     // 开场每轮都带：按会话 id 只带一次会赌宿主时序（新会话的系统提示
     // 常常在 session/created 之前就拼好了），赌输一次新时空就白跑。
@@ -880,42 +917,31 @@ export function apply(ctx, rawConfig) {
       }
     })()
     const lines = [
-      '【书同文车同轨】本会话已启用统一收纳与交接规则。',
-      '',
-      '开场（每轮都带；先做完这几步，再回用户第一句）：',
-      '不是等用户提起才生效——不管用户第一句话说什么，本插件和这套交接规则都在这。',
+      '【书同文车同轨】交接规则已启用（每轮都带，不管第一句话说什么）。',
       rootLine,
+      selfAddressId
+        ? `你的时空地址：dsh://session/${selfAddressId} —— 这就是投递地址，别从回执里抄、别猜；没登记过就调一次 space_register{name:"你的名字"}（地址由工具自己填）。`
+        : '你的时空地址：这一轮装配时拿不到发起者，**先别认地址**——要真地址就调 space_list{includeSelf:true}，看 self:true 那条。',
       ...broadcastLine,
-      '**三块板块的权重（读序不许倒）：① 规矩 100 ＞ ② 现在 90 ＞ ③ 目录 80。**',
-      '第一件事只有一件：读 ①。没读它之前不要打开 ②③，也不要先去翻 README、项目总览或白板——顺序一倒，后面全乱（0.5.3 起写死，实测踩过）。',
-      `① 读 **${NORMS_FILE}**（第一层：定死的规矩——重启/交接/文件存放/隐私/账本/插件接口，只挑跟你这次相关的几条）；`,
-      `② 读 **${DYNAMIC_FILE}**（第二层：现在谁在干什么、哪件事先修、哪些请求没人接、有没有全时空重启；顶部就是「⚠ 挂账」段，有坑先认领）；`,
-      '③ 读 handoff/README.md（第三层：总目录——⚠挂账 → 一·在办（认领活）→ 二·清单 → 三·文件 → 四·插件 → 五·工具 → 六·A盘 → 七·已归档）；接活前再读 handoff/项目总览.md（几个项目、各自到哪一步、最近加了什么）；细则在 handoff/索引/ 下六页（文件/插件/工具/A盘/交接/教训），按需再点；',
-      '注：① ② ③、`handoff/项目总览.md`、两个索引**都是生成物**——要改就改源头（手册文件 / 白板 / 交接 / 账本），插件会在下次启动或归档后重排；手改生成物必被覆盖（0.5.4 起写死）。',
-      '注：开场为了看清局面先截图、看屏幕，不算「翻别的地方」；但别顺手去读别的文件、别翻旧交接。',
-      '④ 交接按**项目**找，不要一份份翻：看 ② 或 ③ 的「一 · 在办」——每个项目下面有一行「当前交接：<文件>」。用用户的话或任务名对出自己接哪个项目，**只读那一份**（先 machine 版；头两行就写着「项目」「交给」，对不上就不是给你的）；项目没挂当前交接，就直接读 `handoff/projects/<id>.md` 的「当前一棒」；对不出来就问用户「我是来接哪个项目的？」，别猜。更旧的看 handoff/索引/交接索引.md（顶部「按项目看」）；其它交接知道存在就行，不要逐个打开；',
-      '⑤ 白板在 handoff/projects/，只读「当前一棒」相关的项目；做完了再从总目录看还要不要接别的；',
-      '⑥ 路径不确定就 locate / inspect_handoff，别猜；只在上面那个根目录里找，别在别处翻旧交接（比如工作区根上的旧 HANDOFF.md）；',
-      '⑦ 要写教训就写 handoff/教训日记/<日期>-<主题>.md；要更新这台电脑的状态就改 handoff/任务交接本/当前状态.md；',
-      '⑧ 不确定自己会不会某件事（Office、文档、绘图、浏览器自动化等），先看 handoff/能力目录.md 里有没有现成技能；里面没有的再用 market_search 现找现装；',
-      '⑨ 收尾前写一份日档 self/日档/<日期>-<时空名>.md（五段：触点/我的想/变/我的回/回声）；聊天类时空写 self/diary/ 日记，不写日档。',
-      '',
-      `**开工前先定位（0.5.28，别一股脑全读）**：做正事之前调一次 \`focus_context{task:"这次要做什么"}\`——它按相关性只给你该读的手册页（带小节行号）和该看的请求；九档都认，做同类事时还会自动预读以前的教训日记。没列出来的先放着。主题索引：${topicIndexLine()}。`,
+      '开场读序（不许倒）：① **' + NORMS_FILE + '**（规矩）→ ② **' + DYNAMIC_FILE + '**（现在）→ ③ handoff/README.md（目录）。',
+      '开工前调 `focus_context{task:"..."}`：按任务挑该读的手册页和请求；不相关的不读，别整页翻。',
+      '交接按项目找：白板「一·在办」的当前交接（先 machine 版）只读那一份；对不上就问，别猜。',
+      '写作：教训 → handoff/教训日记/<日期>-<主题>.md；本机状态 → handoff/任务交接本/当前状态.md；日档 → self/日档/<日期>-<时空名>.md；路径不确定用 locate / inspect_handoff。',
       '',
     ]
     lines.push(
       '硬规则：',
-      '① 顶层只有 9 档（handoff / created / downloads / incoming / scratch / archive / logs / config / self），不新建档，不删除、移动、改名、改权限顶层档本身。',
-      '② 写文件前路径不确定，先调 locate 或 inspect_handoff 查证，不要猜。',
-      '③ 每次任务结束，机器版与用户版交接同时产出。',
-      '④ 删除一律软删进 archive/trash；scratch 真删要先问人。',
-      '⑤ 这次意图和上次方向冲突时，挂起问人，不自己选。',
+      '① 九档只读写，不新建/删/改顶层档；删除软删进 archive/trash，scratch 真删先问人。',
+      '② 写前查证路径；每次任务结束，机器版与用户版交接同时产出。',
+      '③ 意图和上次冲突 → 挂起问人。',
+      '④ 时空边界：只改自己 organ.json / 白板「当前一棒」名下的代码；别人的目录只读，问题走「白板挂账 + inbox_send」；不碰别人的会话；自己的 id 只认自己 shell 的 `$env:DSH_SESSION_ID`（细则 handoff/手册/时空边界.md）。',
+      '⑤ 重启走 `restart_dsh(action=arm)`，先回「马上重启」，别直接跑脚本（细则 handoff/手册/重启.md）。',
       '',
       '现状：',
       ...summarizeStartup(runtime),
       ...summarizePeers(),
       '',
-      '可用工具：locate / inspect_handoff / list_handoffs / update_handoff / begin_task / end_task / heartbeat / restore / archive_handoff / rollback_data / housekeeping_report / project_upsert / project_read / project_list / inbox_send / inbox_list / inbox_close / focus_context',
+      '可用工具：locate / inspect_handoff / list_handoffs / update_handoff / begin_task / end_task / heartbeat / restore / archive_handoff / rollback_data / housekeeping_report / project_upsert / project_read / project_list / inbox_send / inbox_list / inbox_close / focus_context / space_list（时空地址簿：谁活着、住哪、地址）/ space_register（给自己登记名字，地址不用抄）',
     )
     return lines.join('\n')
   }
@@ -925,7 +951,7 @@ export function apply(ctx, rawConfig) {
    *
    * 0.4.4：项目数改成**每轮从磁盘现数**（十来个文件名，代价可忽略）。
    * 以前只读最近一次异步刷新的 peerCache，会跟 project_list 对不上
-   * （你抓到「开场 13 个 / 实际 14 个」就是这么来的）。
+   * （主人抓到「开场 13 个 / 实际 14 个」就是这么来的）。
    *
    * @returns {string[]}
    */
@@ -1000,12 +1026,7 @@ export function apply(ctx, rawConfig) {
   function summarizeStartup(runtime) {
     if (runtime.fatal) return [`- 启动失败：${runtime.startup?.notes?.join('；') ?? '未知原因'}`]
     const out = []
-    if (runtime.ctx?.root) out.push(`- 交接根目录：${runtime.ctx.root}`)
-    // 0.5.0 三层：规矩 → 现在 → 目录。顺序写进现状，省得新时空只读目录就开工。
-    if (runtime.ctx?.root) {
-      const normsCount = normsCountSync(runtime.ctx)
-      out.push(`- 三层信息：① 规矩 \`${NORMS_FILE}\`（${normsCount} 条：重启/交接/存放/隐私…） → ② 现在 \`${DYNAMIC_FILE}\`（谁在干什么、先修什么） → ③ 目录 \`handoff/README.md\``)
-    }
+    // 0.5.30：根目录和三层读序已挪到开场头部，现状里不再重复。
     try {
       const text = describeBroadcast(pendingBroadcastSync(runtime.ctx))
       if (text) out.push(`- ${text}`)
@@ -1018,11 +1039,11 @@ export function apply(ctx, rawConfig) {
     let presenceLine = ''
     try {
       const decision = decideRestartDelay({ ctx: runtime.ctx, selfSessionId: runtime.sessionId })
-      presenceLine = `；不填 delaySec 就走**握手模式**（先按天花板 ${AUTO_CEILING_SEC} 秒排着，只有拿到硬证据——别的时空全 ack，或没人挂着任务也没人在写——才自动提前到 ${AUTO_EARLY_SEC} 秒；沉默不算证据。现在这一档按现场算是 ${decision.label}，${decision.delaySec} 秒：${decision.reasons[0] ?? ''}）`
+      presenceLine = `；握手 ${AUTO_CEILING_SEC}s 天花板 / 提前 ${AUTO_EARLY_SEC}s，现场 ${decision.label} ${decision.delaySec}s（${decision.reasons[0] ?? ''}）`
     } catch {
       // 感知失败就退回默认档，别挡住开场
     }
-    out.push(`- 你自己会的事：要重启 DSH 就用 \`restart_dsh\`（action=arm）——它先把「全时空重启」写进广播，别的时空每轮开场都能看到并收尾，再调 \`外部重启脚本（safety-kit/bin/restart-dsh-later.ps1）\` 排程；先回一句「马上重启」再 arm${presenceLine}。看到广播的时空：收完自己那一轮就调 \`restart_dsh(action="ack")\` 报「我收尾了」，别让发起方干等。不要直接跑 restart-dsh.ps1，也不要用 Start-Process/WMI 起延时脚本；规则见 \`./tongwen\\handoff\\手册\\重启.md\`（重启后 GUI 端口会变）`)
+    out.push(`- 重启：\`restart_dsh(action=arm)\`，先回「马上重启」${presenceLine}；看到广播就收尾 + ack（细则 handoff/手册/重启.md）`)
     const presence = runtime.startup?.presence
     if (presence) {
       out.push(`- 九档：${presence.present?.length ?? 0} 档在位${presence.missing?.length ? `，缺失 ${presence.missing.join('、')}` : ''}${presence.notWritable?.length ? `，不可写 ${presence.notWritable.join('、')}` : ''}`)
@@ -1042,7 +1063,24 @@ export function apply(ctx, rawConfig) {
     return out.length > 0 ? out : ['- 一切正常']
   }
 
-  const primer = () => buildPrimer(state.runtime)
+  // 0.5.37：prompt 装配会带 scope（就是调用方 Agent），拿它的 id——不能再用插件全局那个（那是第一个加载的时空）
+  // 0.5.38：开场拿不到「调用方 Agent」时，不许写死、也不许写插件加载时那个会话。
+  // 可靠来源是 `agents.currentInitiator()`（本进程驱动链里的当前发起者）——
+  // prompt 装配就发生在它这一轮里；装配参数里的 scope 不是 Agent，别再用它。
+  const currentAgentId = () => {
+    try {
+      const agents = ctx.get('agents')
+      const id = agents?.currentInitiator?.()?.id
+      return id ? String(id) : null
+    } catch {
+      return null
+    }
+  }
+  const primer = (assemble) => {
+    const scopeId =
+      assemble?.scope?.id && /^session-/.test(String(assemble.scope.id)) ? String(assemble.scope.id) : null
+    return buildPrimer(state.runtime, scopeId ?? currentAgentId())
+  }
   try {
     disposers.push(
       ctx.systemPrompt.context({
@@ -1129,7 +1167,7 @@ export function apply(ctx, rawConfig) {
   // ---- 握手式自动重启（0.5.6，0.5.13 只认硬证据）----
   // 广播是文件，本插件是唯一知道「就绪了没」的那一方：每 3 秒算一次，
   // 只有别的时空全 ack、或没人挂着任务也没人在写，才把天花板任务换成 25 秒提前档；
-  // 沉默不是证据——06:47 就是拿「静默 20 秒」当收手，把正在干活的安全插件杀了。
+  // 沉默不是证据——06:47 就是拿「静默 20 秒」当收手，把正在干活的护城河杀了。
   // 只在广播 pending 时才真的动手，平时一次读盘几十微秒。
   try {
     const timerService = typeof ctx.get === 'function' ? ctx.get('timer') : ctx.timer

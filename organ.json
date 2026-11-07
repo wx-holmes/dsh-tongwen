@@ -7,10 +7,10 @@
   "owner": "书同文时空",
   "updatedAt": "2026-11-07T01:26:00+08:00",
   "events": {
-    "path": "./tongwen\\logs\\organ-events.jsonl"
+    "path": "A:\\tongwen\\logs\\organ-events.jsonl"
   },
   "health": {
-    "path": "./tongwen\\config\\plugins\\tongwen-tonggui\\runtime-state.json",
+    "path": "A:\\tongwen\\config\\plugins\\tongwen-tonggui\\runtime-state.json",
     "ttlMs": 600000
   },
   "abilities": [
@@ -19,7 +19,7 @@
       "desc": "读账本流水（logs/账本/data/records.jsonl，最近若干条由调用方自行截断）",
       "entry": {
         "type": "file",
-        "path": "./tongwen\\logs\\账本\\data\\records.jsonl"
+        "path": "A:\\tongwen\\logs\\账本\\data\\records.jsonl"
       },
       "sideEffect": "read"
     },
@@ -28,7 +28,7 @@
       "desc": "读书同文的能力目录（现在会哪些技能、怎么调起）",
       "entry": {
         "type": "file",
-        "path": "./tongwen\\handoff\\能力目录.md"
+        "path": "A:\\tongwen\\handoff\\能力目录.md"
       },
       "sideEffect": "read"
     },
@@ -37,7 +37,7 @@
       "desc": "读项目总览（几个项目、各自到哪一步）",
       "entry": {
         "type": "file",
-        "path": "./tongwen\\handoff\\项目总览.md"
+        "path": "A:\\tongwen\\handoff\\项目总览.md"
       },
       "sideEffect": "read"
     },
@@ -46,7 +46,7 @@
       "desc": "读第一层手册总览（定死的规矩：重启/交接/存放/隐私/账本/插件接口）",
       "entry": {
         "type": "file",
-        "path": "./tongwen\\handoff\\手册总览.md"
+        "path": "A:\\tongwen\\handoff\\手册总览.md"
       },
       "sideEffect": "read"
     },
@@ -55,7 +55,7 @@
       "desc": "往书同文的器官备忘里追加一行（logs/organ-notes.md）；这是「手」的验收样张，无害、可回溯",
       "entry": {
         "type": "file",
-        "path": "./tongwen\\logs\\organ-notes.md",
+        "path": "A:\\tongwen\\logs\\organ-notes.md",
         "mode": "append"
       },
       "sideEffect": "write"

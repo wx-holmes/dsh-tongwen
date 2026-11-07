@@ -69,7 +69,7 @@ async function main() {
   // 冒烟不该依赖本机外部校验器：机器上有真的 verify.mjs 就用真的；
   // 没有（比如公开仓库那份副本）就现写一个桩，只验我们这侧「采集 → 送裁决 → 落盘」。
   {
-    const realVerify = process.env.TONGWEN_VERIFY_SCRIPT || 'safety-kit 的 bin/verify.mjs'
+    const realVerify = process.env.TONGWEN_VERIFY_SCRIPT || 'A:\\safeprotocol\\bin\\verify.mjs'
     const exists = await fsp.stat(realVerify).then(() => true, () => false)
     if (!exists) {
       const stubPath = path.join(os.tmpdir(), 'tongwen-fake-verify.mjs')
@@ -100,9 +100,9 @@ async function main() {
 
   const dispose = apply(ctx, { root })
 
-  await check('注册了 21 个工具', () => {
-    assert.equal(registered.size, 21)
-    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call', 'restart_dsh', 'focus_context']) {
+  await check('注册了 23 个工具', () => {
+    assert.equal(registered.size, 23)
+    for (const name of ['locate', 'inspect_handoff', 'list_handoffs', 'update_handoff', 'begin_task', 'end_task', 'heartbeat', 'restore', 'archive_handoff', 'rollback_data', 'housekeeping_report', 'project_upsert', 'project_read', 'project_list', 'inbox_send', 'inbox_list', 'inbox_close', 'organ_list', 'organ_call', 'restart_dsh', 'focus_context', 'space_list', 'space_register']) {
       assert.ok(registered.has(name), `缺少工具 ${name}`)
     }
   })
@@ -217,7 +217,7 @@ async function main() {
     assert.ok(row.taskId, '自评行要有 taskId')
   })
 
-  await check('0.4.9 verify: 行采集 + 送安全插件裁决（verify-scanned / verify-verdicts）', async () => {
+  await check('0.4.9 verify: 行采集 + 送护城河裁决（verify-scanned / verify-verdicts）', async () => {
     const begun = await call('begin_task', {
       bucket: 'logs',
       instance: 'smoke-verify',
@@ -229,7 +229,7 @@ async function main() {
       status: 'done',
       goal: '验证 verify: 行扫描与裁决',
       done: [
-        'verify: file-exists safety-kit 的 bin/verify.mjs',
+        'verify: file-exists A:\\safeprotocol\\bin\\verify.mjs',
         'verify: port 31181',
         'verify: 未知类型 foo',
       ],
@@ -252,7 +252,7 @@ async function main() {
     assert.equal(rows.find((r) => r.type === 'file-exists')?.parsed, true)
     assert.equal(rows.find((r) => r.type === 'port')?.target, '31181')
     assert.equal(rows.find((r) => r.type === '未知类型')?.parsed, false, '不认识的白名单外类型要标 parsed=false')
-    // 0.4.9：白名单内的断言要真送安全插件，裁决落 logs/verify-verdicts.jsonl
+    // 0.4.9：白名单内的断言要真送护城河，裁决落 logs/verify-verdicts.jsonl
     const verdicts = (await fsp.readFile(path.join(root, 'logs', 'verify-verdicts.jsonl'), 'utf8'))
       .split('\n')
       .filter(Boolean)
@@ -276,7 +276,7 @@ async function main() {
       status: 'done',
       goal: '验证 verify 断言的 by 与终止条件',
       done: [
-        'verify: file-exists safety-kit 的 bin/verify.mjs\n  by: tongwen/xtw-smoke\n  stopOnPass: 是',
+        'verify: file-exists A:\\safeprotocol\\bin\\verify.mjs\n  by: tongwen/xtw-smoke\n  stopOnPass: 是',
         'verify: port 31181 by=tongwen/xtw-daily maxRounds=3',
         'verify: port 31181',
       ],
@@ -317,7 +317,7 @@ async function main() {
     assert.equal(rows.length, 3)
     assert.equal(rows.find((r) => r.by === 'tongwen/xtw-smoke')?.contract, 'complete')
 
-    // 裁决回执带派单方（安全插件侧记录里 by 取 VERIFY_BY，不给就永远是 unknown）
+    // 裁决回执带派单方（护城河侧记录里 by 取 VERIFY_BY，不给就永远是 unknown）
     const verdicts = (await fsp.readFile(path.join(root, 'logs', 'verify-verdicts.jsonl'), 'utf8'))
       .split('\n')
       .filter(Boolean)
@@ -778,7 +778,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
   await fsp.access(scratchFile)
 })
 
-  // 器官系统 v0（0.4.0）：扫名片、读事件、门口路由；0.4.3：write/danger 走安全插件 gate
+  // 器官系统 v0（0.4.0）：扫名片、读事件、门口路由；0.4.3：write/danger 走护城河 gate
   await check('器官系统：file/read 直读、write/danger 走 gate、门批后落到公共的手真做事（0.4.0/0.4.3/0.5.8 回归）', async () => {
     const organsLib = await import('../lib/organs.js')
     const organRoot = path.join(root, 'plug-root')
@@ -801,7 +801,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
       events: { path: 'events.jsonl' },
     }), 'utf8')
     await fsp.writeFile(path.join(organDir, 'note.txt'), 'hello organ\n', 'utf8')
-    // 0.5.12：事件带 id 与 payload.owner（外部插件 0.1.0 的格式）
+    // 0.5.12：事件带 id 与 payload.owner（黑洞 0.1.0 的格式）
     await fsp.appendFile(path.join(organDir, 'events.jsonl'), JSON.stringify({ ts: '2026-11-05T00:00:00.000Z', id: 'evt-smoke-1', type: 'task.done', severity: 'info', subject: 'smoke', payload: { owner: 'smoke-profile' } }) + '\n', 'utf8')
 
     const ctx = { root, sessionId: 'session-smoke' }
@@ -817,7 +817,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(read.ok, true)
     assert.match(read.content, /hello organ/)
 
-    // write：起一个假安全插件，扫到 request 就回 allow；门批了以后应真写文件（0.5.8：手是共用的）
+    // write：起一个假护城河，扫到 request 就回 allow；门批了以后应真写文件（0.5.8：手是共用的）
     const allowNextGate = () =>
       (async () => {
         const deadline = Date.now() + 2000
@@ -847,7 +847,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(ran.exec.entry.type, 'cli')
     assert.match(ran.exec.stdout, /hi-cli/)
 
-    // 留痕：动手前一行 prepare、做完一行 done（你定的「留」）
+    // 留痕：动手前一行 prepare、做完一行 done（主人定的「留」）
     const execLog = await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8')
     assert.match(execLog, /"phase":"prepare"/)
     assert.match(execLog, /"phase":"done"/)
@@ -865,7 +865,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.match(delegated.message, /mcp__smoke__press/)
     assert.match(await fsp.readFile(path.join(root, 'logs', 'organs-exec.jsonl'), 'utf8'), /"phase":"delegated"/)
 
-    // 0.5.11：args 传成 JSON 字符串也认（安全插件 06:20 报过 args 回执为 null）
+    // 0.5.11：args 传成 JSON 字符串也认（护城河 06:20 报过 args 回执为 null）
     const toolPending2 = organsLib.organCall({ ctx, config: cfg }, { ability: 'echo.tool', args: '{"text":"as-string"}' })
     await allowNextGate()
     const delegated2 = await toolPending2
@@ -1357,7 +1357,7 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(missing.errorCode, 'E_VALIDATION_BLOCKING')
   })
 
-  await check('0.5.24/0.5.27 相关性主题表：九档全覆盖（17 大类）、教训/日档/项目白板动态预读、优先级唯一', async () => {
+  await check('0.5.24/0.5.27 相关性主题表：九档全覆盖（18 大类）、教训/日档/项目白板动态预读、优先级唯一', async () => {
     const relevance = await import('../lib/relevance.js')
 
     // ① 表本身没写坏：id/priority 不重复、tier 认识、每类至少一页文档或一条动态目录
@@ -1365,13 +1365,13 @@ await check('清扫报告：列出过期文件但不删（0.3.28 回归）', asy
     assert.equal(v.ok, true, `主题表自检没过：${v.errors.join('；')}`)
     assert.equal(v.schemaVersion, 2, '表结构版本要带出来，方便老时空看出「表变过」')
 
-    // ② 清点：15 个主题 + 兜底 = 16 大类，按 priority 从高到低
+    // ② 清点：18 个主题 + 兜底 = 19 大类，按 priority 从高到低
     const table = relevance.topicTable()
-    assert.equal(table.length, 17, '16 个主题 + 兜底 = 17 大类')
+    assert.equal(table.length, 19, '18 个主题 + 兜底 = 19 大类')
     assert.deepEqual(
       table.map((t) => t.id),
       [
-        'handoff', 'project', 'plugin', 'publish', 'lessons', 'self', 'files', 'restart', 'logs',
+        'handoff', 'project', 'plugin', 'dsh-api', 'boundary', 'publish', 'lessons', 'self', 'files', 'restart', 'logs',
         'ledger', 'created', 'incoming', 'downloads', 'config', 'scratch', 'archive', 'general',
       ],
     )
