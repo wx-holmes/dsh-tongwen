@@ -23,6 +23,8 @@ import { listProjects } from './lib/projects.js'
 import { readInbox, mergeInbox } from './lib/inbox.js'
 import { normsCountSync, NORMS_FILE, DYNAMIC_FILE } from './lib/layers.js'
 import { topicIndexLine } from './lib/relevance.js'
+import { syncBrief } from './lib/sync.js'
+import { installToolGate } from './lib/tool-gate.js'
 import {
   pendingBroadcastSync,
   describeBroadcast,
@@ -184,7 +186,7 @@ const TOOL_SPECS = [
   {
     name: 'locate',
     description:
-      '按关键词查找已有的交接实例，返回候选列表（含档位、类型、实例名、机器版交接路径）。写文件前路径不确定时先调用它，不要猜。',
+      '按关键词找交接实例（档位、类型、实例名、机器版路径），写文件前路径不确定时先调，不要猜。',
     parameters: {
       query: { type: 'string', description: '关键词，可以是实例名、显示名或类型名的一部分', required: true },
       bucket: { type: 'string', description: '只在某个档里找（handoff/created/downloads/incoming/scratch/archive/logs/config/self）' },
@@ -196,7 +198,7 @@ const TOOL_SPECS = [
   {
     name: 'inspect_handoff',
     description:
-      '读一份交接文件。可以给 path（handoff/ 或 archive/versions/ 下的相对路径），也可以给 instance 名。返回结构化内容与原文。',
+      '读一份交接：给 path 或 instance，kind=machine/user，可指定归档 version。',
     parameters: {
       path: { type: 'string', description: '交接文件相对路径，优先于 instance' },
       instance: { type: 'string', description: '实例物理名' },
@@ -207,7 +209,7 @@ const TOOL_SPECS = [
   },
   {
     name: 'list_handoffs',
-    description: '列出交接实例，可按类型、状态、更新时间筛选，分页返回。',
+    description: '列交接实例，可按类型/状态/时间筛，分页。',
     parameters: {
       typeSlug: { type: 'string', description: '类型短名' },
       status: { type: 'string', description: '实例状态', enum: ['active', 'done', 'abandoned', 'lost'] },
@@ -221,7 +223,7 @@ const TOOL_SPECS = [
   {
     name: 'update_handoff',
     description:
-      '整节替换机器版交接里的某一节。只允许改第 3 节（目标与当前状态）、第 4 节（方向锚点）、第 5 节（事实 vs 假设）、第 6 节（建议入口）。会自动保留旧版备份。',
+      '整节替换机器版交接的一节（只允许第 3–6 节，自动备份旧版）。',
     parameters: {
       instance: { type: 'string', description: '实例物理名', required: true },
       section: {
@@ -237,7 +239,7 @@ const TOOL_SPECS = [
   {
     name: 'begin_task',
     description:
-      '开始一次任务登记：确定档位、类型和实例名，返回幂等键。宿主没有任务概念，所以任务边界要显式声明。bucket 必须自己判断，拿不准就问人。',
+      '开始任务登记：选档位 bucket（必填）、类型、实例名，返回幂等键。bucket 拿不准就问人。',
     parameters: {
       bucket: {
         type: 'string',
@@ -262,7 +264,7 @@ const TOOL_SPECS = [
   {
     name: 'end_task',
     description:
-      '结束任务并把产物登记成机器版 + 用户版双份交接。产物路径必须是 <bucket>/<相对路径> 形式。旧版会自动备份。交接头会写清「属于哪个项目、交给谁」，新时空按项目就能找到自己那一份。',
+      '结束任务并产出机器版+用户版双份交接。status=done/partial/aborted；artifacts 传「档位/相对路径」；to 写交给谁；attempts/factsCited/factsWrong 是自评（不确定就不填）。',
     parameters: {
       status: { type: 'string', description: '任务结果', required: true, enum: ['done', 'partial', 'aborted'] },
       // 数组型参数统一用 json：宿主对嵌套数组 schema 的校验会拒绝，
@@ -296,6 +298,11 @@ const TOOL_SPECS = [
         type: 'number',
         description: '自评：交接里写错、或后来被推翻的「已确认事实」条数；确认为 0 就写 0。',
       },
+      verified: {
+        type: 'json',
+        description:
+          '核实（回读证据），数组，每项一行字符串。凡外部可观察结果（端口/版本/远端哈希/文件落盘/接口返回）都要在收尾回读一次，把「命令 + 关键输出」写这里；没有外部结果可回读就留空，不许拿工具成功回执冒充。',
+      },
       done: { type: 'json', description: '已完成的事项，字符串数组，例如 ["扫了 A 盘","写了报告"]' },
       blocked: { type: 'json', description: '未完成或阻塞的事项，字符串数组' },
       lastStop: { type: 'string', description: '上次停在哪' },
@@ -318,14 +325,14 @@ const TOOL_SPECS = [
   },
   {
     name: 'heartbeat',
-    description: '报一次心跳，更新运行时状态里的最后活跃时间。',
+    description: '报一次心跳，更新最后活跃时间。',
     parameters: {},
     execute: heartbeat,
   },
   {
     name: 'restore',
     description:
-      '从 archive/trash 或 archive/versions 恢复一份文件。从版本备份恢复时必须显式指定 targetBucket。恢复不会覆盖已存在的路径。',
+      '从 archive/trash 或 archive/versions 恢复文件；从版本恢复必须给 targetBucket，不覆盖已有路径。',
     parameters: {
       originalPath: { type: 'string', description: '回收记录里的来源路径', required: true },
       targetBucket: {
@@ -339,7 +346,7 @@ const TOOL_SPECS = [
   {
     name: 'archive_handoff',
     description:
-      '把一个交接实例整份软删：机器版与用户版移进 archive/trash（可用 restore 找回），再从索引摘掉条目。用于清理看完的旧实例和自测残留。',
+      '整份软删一个交接实例（进 archive/trash，可 restore 找回），并摘掉索引条目。',
     parameters: {
       instance: { type: 'string', description: '实例物理名', required: true },
       reason: { type: 'string', description: '归档原因，记进回收记录' },
@@ -349,7 +356,7 @@ const TOOL_SPECS = [
   {
     name: 'housekeeping_report',
     description:
-      '生成或重看「过期文件清扫报告」：列出超过保留期的审计日志、账本日报、回收站、临时区文件；只报告不删除，删要主人点头。',
+      '生成过期文件清扫报告（只报告不删）：审计日志、账本日报、回收站、临时区。force 忽略每周节流。',
     parameters: {
       force: { type: 'boolean', description: '忽略每周节流，立刻重扫一份。' },
     },
@@ -359,7 +366,7 @@ const TOOL_SPECS = [
   {
     name: 'rollback_data',
     description:
-      '把九档里的一个数据文件（白板、规范、索引页、当前状态等）回滚到某个历史版本。备份在 archive/versions/_data/ 下；回滚前会先把当前内容再备份一份，所以回滚也能再滚回去。回滚会留通知：logs/rollback.log 与 handoff/任务交接本/最近回滚.md。',
+      '把一个数据文件回滚到历史版本（备份在 archive/versions/_data/），回滚前再备份当前版本。',
     parameters: {
       path: { type: 'string', description: '九档内的相对路径，例如 handoff/projects/tongwen-plugin.md', required: true },
       version: { type: 'string', description: '要回到的版本号（时间戳，可省略=最近一版）' },
@@ -369,7 +376,7 @@ const TOOL_SPECS = [
   {
     name: 'project_upsert',
     description:
-      '建或合并一个项目白板（handoff/projects/<id>.md）。不存在则建，存在则合并：title/goal/status/priority 覆盖，to/action（当前一棒）与 todo 整体替换，participants/roles/decisions 追加，issue 挂账、resolve_issue 撤账。status=done 时白板自动移进 handoff/projects/done/，总目录里只剩一行「已归档」。跨会话共享「这个项目到哪了」。',
+      '建或合并项目白板（handoff/projects/<id>.md）：title/goal/status/priority 覆盖，to+action+todo 整体替换，participant/role/decision 追加，issue 挂账、resolve_issue 撤账。status=done 自动归档。',
     parameters: {
       id: { type: 'string', description: '项目 id，小写字母/数字/连字符（中文名放 title 里）', required: true },
       title: { type: 'string', description: '项目标题（可中文）' },
@@ -394,7 +401,7 @@ const TOOL_SPECS = [
   },
   {
     name: 'project_read',
-    description: '读一个项目白板，返回解析后的字段与原文。项目不存在时 exists=false，不报错；已归档的项目也能读（archived=true）。',
+    description: '读一个项目白板（不存在返回 exists=false；已归档也可读）。',
     parameters: {
       id: { type: 'string', description: '项目 id', required: true },
     },
@@ -402,28 +409,35 @@ const TOOL_SPECS = [
   },
   {
     name: 'project_list',
-    description: '列出全部项目白板的 id、标题、状态、优先级、更新时间和当前一棒交给谁；已归档的带 archived=true。',
+    description: '列全部项目白板：id、标题、状态、优先级、更新时间、当前一棒给谁。',
     parameters: {},
     execute: projectList,
   },
   {
     name: 'inbox_send',
     description:
-      '给另一个会话（或所有人）留一条请求，写进 handoff/inbox.jsonl。这是会话之间唯一的托付方式——没有消息总线，对方下次开场会在简报里看到。',
+      '给另一个会话或所有人留一条请求（handoff/inbox.jsonl）。to 省略=广播；kind=decision 要人拍板、notify 仅通知；dedupeKey 防重复。',
     parameters: {
       to: { type: 'string', description: '目标会话 id；不传或 any 表示广播给所有会话' },
       request: { type: 'string', description: '请求内容，一句话说清要对方做什么', required: true },
       project: { type: 'string', description: '关联的项目 id（可选）' },
+      kind: {
+        type: 'string',
+        enum: ['decision', 'notify'],
+        description: 'decision=要人拍板的（简报只数这类）；notify=只是通知（默认）',
+      },
+      dedupeKey: { type: 'string', description: '幂等键：同键未关闭时不重复投递（防止同一事件被重复处理）' },
     },
     execute: inboxSend,
   },
   {
     name: 'inbox_list',
-    description: '看信箱里的请求，可按「发给我的」「某个项目」「未处理/已完成」筛选。',
+    description: '看信箱：mine 只看发给自己的，可筛项目/类型/状态。',
     parameters: {
       mine: { type: 'boolean', description: '只看发给本会话的（含广播）' },
       to: { type: 'string', description: '只看某个收件人的（认 dsh://session/<id> 与裸 id，地址会先归一）' },
       project: { type: 'string', description: '只看某个项目的' },
+      kind: { type: 'string', description: '只看某一类：decision（要拍板）/ notify（通知）', enum: ['decision', 'notify'] },
       status: { type: 'string', description: '按状态筛', enum: ['open', 'done'] },
       limit: { type: 'integer', description: '最多返回几条' },
     },
@@ -432,7 +446,7 @@ const TOOL_SPECS = [
   {
     name: 'focus_context',
     description:
-      '相关性定位（0.5.28）：给一句「这次要做什么」，只返回这次该读的手册页（带相关小节行号）和该看的信箱请求；不相关的请求只报数量、不推送。九档都认：上传→隐私清洗手册，做插件→《插件的自我管理》，重启→重启手册，看账本/花费→最近两天的账本日报，写日档/人格→self 档，做同类事→自动预读以前的教训日记（指出可能踩到的那几行）。0.5.26 起给 project 就带上那个项目的白板，并把「当前一棒 / 挂账」的行号指出来（不点名就不推 projects）。开工前先调它，别把手册和通知一股脑全读。',
+      '开工前定位：给一句「这次要做什么」，只回该读的手册页（带行号）和相关信箱；带 project 会附该白板并指出当前一棒与挂账。',
     parameters: {
       task: { type: 'string', description: '这次要做什么，一句话（越具体越准）', required: true },
       project: { type: 'string', description: '当前项目 id（可选；对上项目的请求加分）' },
@@ -443,7 +457,7 @@ const TOOL_SPECS = [
   {
     name: 'space_list',
     description:
-      '时空地址簿（0.5.32）：现在有哪些时空活着、各自住哪个工作区、最后一次活动多久前、可能在管哪个项目。地址有两种——`dsh://session/<sessionId>` 投递用这个，`dsh://workspace/<workspaceId>` 指桌面/工作区。事实全来自磁盘：workspace.json 是归属权威表，会话文件的 mtime 判 active / idle / stale。给 address 就查单条（也认 session id 和 8 位短句柄）。虫洞投递前先查这里，别猜 id。',
+      '时空地址簿：谁活着、住哪、多久没动、在管哪个项目。给 address 查单条（认 dsh://session/<id> 和 8 位短句柄）；task=按事找人；status=按状态筛。',
     parameters: {
       status: { type: 'string', description: '只看某状态', enum: ['active', 'idle', 'stale', 'archived'] },
       project: { type: 'string', description: '只看白板里提到过的某个项目' },
@@ -458,14 +472,14 @@ const TOOL_SPECS = [
   {
     name: 'space_register',
     description:
-      '登记时空（0.5.34）：给「现在正在说话的这个时空」起个名字，写进 handoff/时空名册.md。**不用你抄会话 id**——地址由工具自己从运行时取，抄写错误在这个工具里不存在。名字写短（如「护城河」「意识」「黑洞」），一次就够，重名会追加新行、以最后一行为准。',
+      '给当前时空起名并写进名册（地址由工具自己取，不用抄 id）。',
     parameters: {
-      name: { type: 'string', description: '这个时空的名字（短、可辨认，如 护城河 / 意识 / 黑洞）', required: true },
+      name: { type: 'string', description: '这个时空的名字（短、可辨认，如 安全插件 / 意识 / 外部插件）', required: true },
     },
     execute: spaceRegister,
   },  {
     name: 'inbox_close',
-    description: '关掉一条请求（追加一条 close 事件，不修改已有行）。可以带一个结果交接的路径。',
+    description: '关掉一条请求（追加 close 事件，不改旧行），可带结果交接路径。',
     parameters: {
       id: { type: 'string', description: '请求 id（ib_ 开头）', required: true },
       resultRef: { type: 'string', description: '结果交接的路径（可选）' },
@@ -482,13 +496,13 @@ const TOOL_SPECS = [
   {
     name: 'organ_call',
     description:
-      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过护城河的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。0.5.25 起双向调用带防回环：chain 最多 3 跳、同一能力不许出现两次；replyTo 按事件 id 去重（同一件事只回一次），每次调用都会在我们的 events.jsonl 留一行 organ.call，回执再留 organ.call.reply。',
+      '神经系统门口：按名片把一个能力路由到对应器官。手是大家共用的（0.5.8）：只读能力直接做（file 直读、http 只 GET）；会改东西的能力先过安全插件的门，门批了才落到公共那只手上去做（写文件 / 跑命令 / 发请求），动手前先在 logs/organs-exec.jsonl 留一行，做完再记结果。dryRun=true 只探路不动手。0.5.25 起双向调用带防回环：chain 最多 3 跳、同一能力不许出现两次；replyTo 按事件 id 去重（同一件事只回一次），每次调用都会在我们的 events.jsonl 留一行 organ.call，回执再留 organ.call.reply。',
     parameters: {
       ability: { type: 'string', description: '能力名，例如 chat.send', required: true },
       dryRun: { type: 'boolean', description: '只探路：返回文件是否存在/多大、会走哪道门，不返回内容也不动手' },
       content: { type: 'string', description: '会写东西的能力要用它：写文件的内容，或 http 的请求体' },
       args: {
-        // 0.5.11：不写死 type——命令要数组、派单要对象，写死一种会把另一种吃掉（护城河 06:20 报的 args=null 就是这个）
+        // 0.5.11：不写死 type——命令要数组、派单要对象，写死一种会把另一种吃掉（安全插件 06:20 报的 args=null 就是这个）
         description:
           '参数：跑命令时给数组（接在名片 entry.args 后面，如 ["--n","6"]）；派单给工具时给对象（键值对，会原样抄进回执）。给 JSON 字符串也认。',
       },
@@ -510,7 +524,7 @@ const TOOL_SPECS = [
   {
     name: 'restart_dsh',
     description:
-      '重启 DSH 的唯一推荐入口（0.5.0 广播，0.5.6 握手式自动收尾，0.5.13 只认硬证据）：先广播、再排程。action=arm 把「全时空重启」写进广播（logs/state/restart-broadcast.json），每个时空下一轮开场都能看到并收尾。**不填 delaySec 就走握手模式**：先按天花板 90 秒排一个一次性任务；别的时空收完自己那轮调 action="ack" 报「我收尾了」；本插件每 3 秒检查一次，**只有拿到硬证据才提前**——要么别的时空全 ack，要么没有任何未完成的 open-task 且没人在写，才撤掉天花板改排 25 秒（最晚 90 秒无论如何断）。**沉默不算证据**：0.5.13 起删掉了「静默 20 秒算停手」那条——干活中的时空跑一条三十秒的命令，从外面看就是静默，06:47 就这样把护城河杀了。填了 delaySec 就是老行为（固定等）。arm 之前先回用户一句「马上重启」——排程后本回合可能被切断。action=ack 是「我收尾了」的握手回执；action=status 看广播 + 还差谁；action=spaces 看在场的时空；action=cancel 撤销广播并尝试删掉已排的任务（未必成功，会如实说）。',
+      '重启 DSH 的唯一入口。arm=广播并排程（不填 delaySec 走握手：最晚 45 秒断，别的时空全 ack 或没人干活就提前到 25 秒）；ack=我已收尾；status=看进度；spaces=在场时空；cancel=撤销。arm 前先回一句「马上重启」。细则见 handoff/手册/重启.md。',
     parameters: {
       action: {
         type: 'string',
@@ -647,6 +661,11 @@ const TOOL_SPECS = [
         // 排程失败就别把假广播挂着吓人：立刻改成 cancelled，并如实说没排上。
         await cancelBroadcast(ctx, `排程失败：${scheduled.output ?? '未知原因'}`)
       }
+      // 0.5.46（05:53 你定）：广播**不需要通道**，也不叫醒任何人。
+      // 试过 `--to all`（把一屋子睡着的全叫起来）和「只叫有任务的」，两次都白花 token：
+      // 被叫醒的时空醒来后没认出这是广播，照样各干各的；而真正在干活的时空本来就醒着，
+      // 下一轮开头自然看见广播。所以这里什么都不发——只靠盘上的广播 + 能力卡状态。
+      // 判据：醒着的看得见，睡着的不用看。
       return envelope(runtime, {
         ok: scheduled.ok,
         action,
@@ -695,7 +714,7 @@ export function apply(ctx, rawConfig) {
   /**
    * 确保目录存在。
    *
-   * 不能无脑 mkdir：Windows 上对盘根（`A:\`）调 mkdir recursive 会报 EPERM，
+   * 不能无脑 mkdir：Windows 上对盘根（`C:\`）调 mkdir recursive 会报 EPERM，
    * 于是一个本来就存在的盘根被当成「建不出来」，插件白白降级到 C 盘。
    * 先 stat，只有确实不存在才建。
    */
@@ -901,6 +920,101 @@ export function apply(ctx, rawConfig) {
   }
 
   // ---- 系统级注入（§12）：不作普通 user 消息 ----
+  // ---- 时空自识别（2026-11-09 10:32 你定、意识 10:35 求）----
+  // 每个时空开场先知道自己是谁、在哪、这一棒是不是自己的。
+  // 数据每轮从盘上现读（名册 + 白板），不缓存、不写进记忆。
+  function describeWhere(runtime, selfSessionId) {
+    const root = runtime?.ctx?.root
+    if (!root || !selfSessionId) return []
+    const sid = String(selfSessionId).replace(/^session-/, '')
+    const myAddress = `dsh://session/session-${sid}`
+    let rosterName = null
+    let rosterWs = null
+    let replaced = false
+    const retiredNames = []
+    try {
+      const text = readFileSync(path.join(root, 'handoff', '时空名册.md'), 'utf8')
+      let section = ''
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim()
+        if (/^##\s+/.test(line)) section = line.replace(/^##\s+/, '')
+        const m = line.match(/^-\s+(.+?)\s*\|\s*dsh:\/\/session\/session-([0-9a-f-]+)\s*\|\s*([^|]+?)\s*\|/)
+        if (!m) continue
+        if (m[2].toLowerCase() !== sid.toLowerCase()) continue
+        const inRetired = /已替换/.test(section)
+        // 现行段优先：同一 sid 在现行段出现就以后者为准（名册里可能有多余的留档标题/错位行）
+        if (rosterName && !inRetired) continue
+        if (inRetired) {
+          retiredNames.push(m[1].trim())
+          continue
+        }
+        rosterName = m[1].trim()
+        rosterWs = m[3].trim()
+        replaced = false
+      }
+    } catch {
+      /* 名册读不到不拦：只少一段提示 */
+    }
+
+    const batons = []
+    try {
+      const dir = path.join(root, 'handoff', 'projects')
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith('.md')) continue
+        let text = ''
+        try {
+          text = readFileSync(path.join(dir, entry), 'utf8')
+        } catch {
+          continue
+        }
+        const m = text.match(/##\s*当前一棒\s*\n([\s\S]*?)(\n##\s|$)/)
+        if (!m) continue
+        const to = (m[1].match(/交给[：:]\s*(.+)/) || [])[1]?.trim() ?? ''
+        const what = (m[1].match(/要做什么[：:]\s*(.+)/) || [])[1]?.trim() ?? ''
+        if (!to) continue
+        const hit = to === myAddress || /(^|\s)any(\s|$)/.test(to) || to.includes(`session-${sid}`)
+        if (!hit) continue
+        const mine = to !== 'any' && (to === myAddress || to.includes(`session-${sid}`))
+        // 截断要显式带省略号：安全插件 11-02 报过「句子没写完」，人会把截断当成全部内容
+        const brief = what.length > 80 ? `${what.slice(0, 80)}…（详见白板）` : what
+        batons.push({ mine, text: `${entry.replace(/\.md$/, '')}${brief ? `：${brief}` : ''}` })
+      }
+    } catch {
+      /* 白板读不到不拦 */
+    }
+
+    const out = ['【你在哪个时空】']
+    if (rosterName) {
+      out.push(`- 名册：${rosterName}（现行）`)
+    } else if (retiredNames.length) {
+      // 只在留档段有这个地址：不当成「你是 XXX」报，留档名字可能是别人的旧壳（c73c785e 就曾被记成「书同文·旧壳」）
+      out.push(
+        `- 名册：现行段没有你（留档段有 ${retiredNames.slice(0, 2).join(' / ')} 的旧行，可能已作废）→ 跑 space_register{name:"你的名字"} 补登现行，别拿留档行当身份`,
+      )
+    } else {
+      out.push('- 名册：没有你这一行 → 先 space_register{name:"你的名字"} 登记，别自己编身份')
+    }
+    out.push(`- 工作区：${rosterWs || '未登记'}`)
+    const mineBatons = batons.filter((b) => b.mine).map((b) => b.text)
+    const anyBatons = batons.filter((b) => !b.mine).map((b) => b.text)
+    const shown = mineBatons.length ? mineBatons.slice(0, 2) : anyBatons.slice(0, 2)
+    out.push(
+      mineBatons.length
+        ? `- 当前一棒（点名给你）：${shown.join('；')}`
+        : anyBatons.length
+          ? `- 当前一棒：没有点名给你的；谁都能接的 ${anyBatons.length} 条，最近：${shown.join('；')}`
+          : '- 当前一棒：没有专门交给你的（白板里没有 to 你、也没 to any 的条目）',
+    )
+    // 信息同步：只在我「落后且相关」时多一行；不相关、没变化就不出现。
+    try {
+      const syncLine = syncBrief(root, `session-${sid}`)
+      if (syncLine) out.push(`- ${syncLine}`)
+    } catch {
+      /* 同步只是提示，出错不能拦住注入 */
+    }
+    return out
+  }
+
   const buildPrimer = (runtime, agentSessionId = null) => {
     // 0.5.38：拿不到发起者就是 null——**不许退回插件加载时那个会话**（那会印出别人的地址）。
     const selfAddressId = agentSessionId || null
@@ -922,11 +1036,13 @@ export function apply(ctx, rawConfig) {
       selfAddressId
         ? `你的时空地址：dsh://session/${selfAddressId} —— 这就是投递地址，别从回执里抄、别猜；没登记过就调一次 space_register{name:"你的名字"}（地址由工具自己填）。`
         : '你的时空地址：这一轮装配时拿不到发起者，**先别认地址**——要真地址就调 space_list{includeSelf:true}，看 self:true 那条。',
+      ...describeWhere(runtime, selfAddressId),
       ...broadcastLine,
-      '开场读序（不许倒）：① **' + NORMS_FILE + '**（规矩）→ ② **' + DYNAMIC_FILE + '**（现在）→ ③ handoff/README.md（目录）。',
-      '开工前调 `focus_context{task:"..."}`：按任务挑该读的手册页和请求；不相关的不读，别整页翻。',
-      '交接按项目找：白板「一·在办」的当前交接（先 machine 版）只读那一份；对不上就问，别猜。',
-      '写作：教训 → handoff/教训日记/<日期>-<主题>.md；本机状态 → handoff/任务交接本/当前状态.md；日档 → self/日档/<日期>-<时空名>.md；路径不确定用 locate / inspect_handoff。',
+      '**先读** handoff/能力卡.md（生成物：你会什么 / 谁在 / 东西在哪 / 在办 / 通道状态；比规矩先看它）。',
+      '规矩按任务取：`focus_context{task:"..."}` 挑该读的页（' + NORMS_FILE + ' 是索引，别整页背）；现在看 ' + DYNAMIC_FILE + '，目录看 handoff/README.md；交接只看白板「一·在办」那一份（先 machine 版）。',
+      '找人先敲门（虫洞 say.mjs / deliver），敲不通才写信箱留底；收到消息先比盘上的时间，盘新就以盘为准。',
+      '写东西前先看墙（`focus_context` 命中就会贴在你面前）；路径拿不准用 locate / inspect_handoff。',
+      '工具面按这次做的事给：**看不到某个工具，不等于没有**——说一句场景词（网页/游戏/截图桌面/定时/分身/会话修/记忆/外部插件/插件），对应那组下一轮就露出来；总目录在 handoff/手册/工具目录.md。还是找不到就直说“真没有”，不要自己造工具或绕路重写。',
       '',
     ]
     lines.push(
@@ -936,12 +1052,13 @@ export function apply(ctx, rawConfig) {
       '③ 意图和上次冲突 → 挂起问人。',
       '④ 时空边界：只改自己 organ.json / 白板「当前一棒」名下的代码；别人的目录只读，问题走「白板挂账 + inbox_send」；不碰别人的会话；自己的 id 只认自己 shell 的 `$env:DSH_SESSION_ID`（细则 handoff/手册/时空边界.md）。',
       '⑤ 重启走 `restart_dsh(action=arm)`，先回「马上重启」，别直接跑脚本（细则 handoff/手册/重启.md）。',
+      '⑥ **做完要清帐**：自己处理完的信箱关掉、白板挂账撤掉、项目做完标 done（自动归档）；只清自己的，别人的不动。细则 handoff/手册/收尾清帐.md。没清帐 = 没做完。',
       '',
       '现状：',
       ...summarizeStartup(runtime),
       ...summarizePeers(),
       '',
-      '可用工具：locate / inspect_handoff / list_handoffs / update_handoff / begin_task / end_task / heartbeat / restore / archive_handoff / rollback_data / housekeeping_report / project_upsert / project_read / project_list / inbox_send / inbox_list / inbox_close / focus_context / space_list（时空地址簿：谁活着、住哪、地址）/ space_register（给自己登记名字，地址不用抄）',
+      '交接/项目/信箱/地址簿都在这一套工具里（名字见工具列表）；地址别抄，用 space_register / space_list 拿。',
     )
     return lines.join('\n')
   }
@@ -951,7 +1068,7 @@ export function apply(ctx, rawConfig) {
    *
    * 0.4.4：项目数改成**每轮从磁盘现数**（十来个文件名，代价可忽略）。
    * 以前只读最近一次异步刷新的 peerCache，会跟 project_list 对不上
-   * （主人抓到「开场 13 个 / 实际 14 个」就是这么来的）。
+   * （你抓到「开场 13 个 / 实际 14 个」就是这么来的）。
    *
    * @returns {string[]}
    */
@@ -974,7 +1091,8 @@ export function apply(ctx, rawConfig) {
       const latestFrom =
         cache.latestInbox?.from?.instance || cache.latestInbox?.from?.sessionId || '某个会话'
       const text = String(cache.latestInbox?.request ?? '').replace(/\s+/g, ' ').slice(0, 60)
-      out.push(`- 给你的请求：${cache.inboxOpen} 条；最近：${latestFrom}：${text}`)
+      const notifyPart = cache.inboxNotify > 0 ? `（另有 ${cache.inboxNotify} 条通知，不占注意力）` : ''
+      out.push(`- 需要你决定的：${cache.inboxOpen} 条${notifyPart}；最近：${latestFrom}：${text}`)
     }
     return out
   }
@@ -1167,7 +1285,7 @@ export function apply(ctx, rawConfig) {
   // ---- 握手式自动重启（0.5.6，0.5.13 只认硬证据）----
   // 广播是文件，本插件是唯一知道「就绪了没」的那一方：每 3 秒算一次，
   // 只有别的时空全 ack、或没人挂着任务也没人在写，才把天花板任务换成 25 秒提前档；
-  // 沉默不是证据——06:47 就是拿「静默 20 秒」当收手，把正在干活的护城河杀了。
+  // 沉默不是证据——06:47 就是拿「静默 20 秒」当收手，把正在干活的安全插件杀了。
   // 只在广播 pending 时才真的动手，平时一次读盘几十微秒。
   try {
     const timerService = typeof ctx.get === 'function' ? ctx.get('timer') : ctx.timer
@@ -1207,6 +1325,16 @@ export function apply(ctx, rawConfig) {
     }
   } catch (error) {
     recordApplyError('timer.restartHandshake', error)
+  }
+
+  // ---- 工具相关性闸门（2026-11-10 03:46，你批准方案 B）----
+  // 每步之前看这一步的用户话，认出来的场景组才露出来；只在命中变化时动工具面。
+  try {
+    const gateRoot = configuredRoot || FALLBACK_ROOT
+    disposers.push(() => {})
+    installToolGate(ctx, gateRoot)
+  } catch (error) {
+    recordApplyError('tool-gate', error)
   }
 
   return () => {

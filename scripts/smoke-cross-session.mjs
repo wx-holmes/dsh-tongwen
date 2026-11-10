@@ -208,15 +208,16 @@ async function main() {
     assert.equal(typeof text, 'string')
     assert.match(text, /书同文车同轨/)
     assert.match(text, /项目：/)
-    assert.match(text, /给你的请求：/)
+    // 0.5.45：简报只数「需要你决定的」，通知类不占配额。
+    assert.match(text, /需要你决定的：/)
     // 0.5.30 开场减重：只留读序/定位/交接/边界，细节交给 focus_context
     assert.match(text, /每轮都带/)
-    assert.match(text, /① \*\*handoff\/手册总览\.md\*\*（规矩）→ ② \*\*handoff\/动态白板\.md\*\*（现在）→ ③ handoff\/README\.md/, '开场三步读序不能倒')
+    // 0.5.49：开场已改成「先读能力卡 + focus_context 按任务取」，不再写死三步读序\n    assert.match(text, /先读.*handoff\/能力卡\.md/, '开场要先读能力卡（0.5.30 减重）')
     assert.match(text, /focus_context\{task:/, '开场要让人先定位（细节不再每轮播报）')
     assert.match(text, /时空边界/, '开场要带边界（0.5.30）')
     assert.match(text, /挂账/, '开场没写挂账')
-    assert.match(text, /当前交接/, '开场没写「认领项目 → 读它那一份当前交接」')
-    assert.match(text, /self\/日档\//, '开场没提醒收尾写日档')
+    assert.match(text, /现状：/, '开场要带「现状」一段（当前一棒/挂账在里头）')
+    assert.match(text, /收尾|清帐/, '开场要提收尾（日档细节交给交接规范）')
     // 根目录不许写死：开场按运行时配置写出来
     assert.match(text, /交接根目录：/)
     assert.ok(text.includes(root), '开场没写当前交接根目录')
@@ -224,12 +225,13 @@ async function main() {
     assert.match(text, /restart_dsh/, '现状里没写重启广播工具')
     assert.match(text, /手册[\\/]重启\.md/, '现状里没指到重启规范页')
     // 0.5.0 三层信息：规矩 → 现在 → 目录（0.5.30 起压成一行读序）
-    assert.match(text, /① \*\*handoff\/手册总览\.md\*\*/, '开场没把手册版排在第一位')
-    assert.match(text, /② \*\*handoff\/动态白板\.md\*\*/, '开场没让看动态白板')
-    assert.match(text, /③ handoff\/README\.md/, '开场没让看总目录')
-    const normsIdx = text.indexOf(`① **handoff/手册总览.md**`)
-    const dynIdx = text.indexOf(`② **handoff/动态白板.md**`)
-    assert.ok(normsIdx > 0 && dynIdx > normsIdx, '开场里 ① 手册总览必须排在 ② 动态白板之前')
+    assert.match(text, /handoff\/手册总览\.md/, '开场要指到手册索引（0.5.30 起压成一行）')
+    // 0.5.49：开场不再编号，改成「先读能力卡 → 规矩按任务取 → 现在看动态白板 → 目录看 README」
+    assert.match(text, /handoff\/动态白板\.md/, '开场没让看动态白板')
+    assert.match(text, /handoff\/README\.md/, '开场没让看总目录')
+    const capIdx = text.indexOf('handoff/能力卡.md')
+    const dynIdx = text.indexOf('handoff/动态白板.md')
+    assert.ok(capIdx > 0 && dynIdx > capIdx, '开场里能力卡必须排在动态白板之前')
     assert.ok(!/⓪ 先看 handoff\/README\.md/.test(text), '0.5.3 起不许再让 README 抢第一步（⓪ 已删）')
     const textAfter = contexts[0].text()
     assert.match(textAfter, /每轮都带/, '开场不该只出现一次')
@@ -266,4 +268,5 @@ async function main() {
 }
 
 await main()
+
 

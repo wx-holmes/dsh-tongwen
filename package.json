@@ -1,6 +1,6 @@
 {
   "name": "dsh-tongwen",
-  "version": "0.5.43",
+  "version": "0.5.48",
   "type": "module",
   "description": "书同文·车同轨 —— 九档统一收纳、机器/用户双份交接与会话变更报告",
   "bin": {

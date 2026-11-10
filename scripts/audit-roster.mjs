@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 名册体检（0.5.41）：主人测地址簿时的一键自检。
+ * 名册体检（0.5.41）：你测地址簿时的一键自检。
  *
  * 查五件事（全部只读）：
  *   1) 解析：每行是否都符合 `- 名字 | dsh://session/<id> | 工作区 | 时间`；
@@ -52,7 +52,7 @@ if (text.includes('## 已替换') && roster.map.size !== seenSid.size) {
   notes.push('已替换段可能混进了解析（应只解析现行段）')
 }
 
-const wsFile = path.join(process.env.DSH_HOME || 'A:\\dsh-home', 'storages', 'workspace.json')
+const wsFile = path.join(process.env.DSH_HOME || '<DSH_HOME>', 'storages', 'workspace.json')
 let known = new Set()
 try {
   const ws = JSON.parse(await fsp.readFile(wsFile, 'utf8'))

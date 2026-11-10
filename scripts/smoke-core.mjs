@@ -144,9 +144,9 @@ await test('typeSlug：禁止 type+交接 形式', () => {
 })
 
 await test('路径总长：超 240 报原因，不静默', () => {
-  const ok = checkFullPathLength('A:\\deepseek-harness\\default-workspace\\dsh-tongwen\\lib\\a.js')
+  const ok = checkFullPathLength('<DSH 安装目录>-harness\\default-workspace\\dsh-tongwen\\lib\\a.js')
   assert.equal(ok.ok, true)
-  const bad = checkFullPathLength(`A:\\${'x'.repeat(300)}`)
+  const bad = checkFullPathLength(`C:\\${'x'.repeat(300)}`)
   assert.equal(bad.ok, false)
   assert.match(bad.reason, /缩短实例名/)
 })
